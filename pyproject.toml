@@ -5,6 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agents-core"
 version = "0.1.0"
+dependencies = [
+	"chromadb",
+	"google-genai",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
