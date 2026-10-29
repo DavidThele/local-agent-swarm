@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 from infrastructure.debug_colors import debug_print
+from infrastructure.concurrency import TERMINAL_LOCK
 
 def load_security_list(filepath: Path) -> set:
     """
@@ -48,13 +49,15 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
     
     # Check Blacklist (Injection attempts)
     if any(char in cmd_string for char in BLACKLIST):
-        approval = input(f"\n[SECURITY ALERT] Command contains blacklisted operators. Approve execution?\nCommand: {cmd_string}\n(Y/N): ")
+        with TERMINAL_LOCK: 
+            approval = input(f"\n[SECURITY ALERT] Command contains blacklisted operators. Approve execution?\nCommand: {cmd_string}\n(Y/N): ")
         if approval.strip().lower() != 'y':
             return "[System] Command execution denied by user."
             
     # Check Greylist (Command not explicitly whitelisted)
     elif base_cmd not in WHITELIST:
-        approval = input(f"\n[SECURITY ALERT] Command '{base_cmd}' is not whitelisted. Approve execution?\nCommand: {cmd_string}\n(Y/N): ")
+        with TERMINAL_LOCK:
+            approval = input(f"\n[SECURITY ALERT] Command '{base_cmd}' is not whitelisted. Approve execution?\nCommand: {cmd_string}\n(Y/N): ")
         if approval.strip().lower() != 'y':
             return "[System] Command execution denied by user."
             
