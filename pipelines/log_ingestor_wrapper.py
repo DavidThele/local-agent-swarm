@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from infrastructure.scrubber import scrub_text
-from ingestor_pipeline import process_telemetry
+from .ingestor_pipeline import process_telemetry
 from infrastructure.debug_colors import debug_print
 from datetime import date
 
