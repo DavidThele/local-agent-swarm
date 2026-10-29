@@ -1,0 +1,7 @@
+.DS_Store
+notes.md
+__pycache__
+*.bin
+*.sqlite3
+*.pickle
+ingestion_state.json
