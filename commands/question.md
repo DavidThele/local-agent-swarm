@@ -13,6 +13,5 @@ Pauses execution and prompts the user for clarification or a decision. Execution
     <Options>
         <Option>/frontend-v1</Option>
         <Option>/frontend-v2-beta</Option>
-        <Option>Other</Option>
     </Options>
 </Question>
