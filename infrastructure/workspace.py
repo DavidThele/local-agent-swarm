@@ -15,7 +15,10 @@ def init_global_workspace() -> Path:
         global_root,
         global_root / "tools",
         global_root / "skills",
-        global_root / "chats"
+        global_root / "chats",
+        global_root / "prompts",
+        global_root / "config",
+        global_root / "db"
     ]
     
     # Create directories safely
