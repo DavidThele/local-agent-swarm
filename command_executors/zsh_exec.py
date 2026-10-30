@@ -31,8 +31,12 @@ def load_security_list(filepath: Path) -> set:
     return items
 
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
-    cmd_string = content.get("Command", "").strip()
+    if isinstance(content, dict):
+        cmd_string = content.get("Command", "").strip()
+    else:
+        cmd_string = str(content).strip()
     timeout = int(attributes.get("timeout", 30))
+    # ... rest of zsh_exec.py remains identical
     
     if not cmd_string:
         return "[Error] No command provided."
