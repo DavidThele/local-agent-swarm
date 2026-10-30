@@ -197,6 +197,14 @@ def run_agent(
 
             try:
                 module_name = ''.join(['_'+c.lower() if c.isupper() else c for c in cmd.command]).lstrip('_') + "_exec"
+                allowed_commands = ROLE_COMMANDS.get(agent_type.lower(), [])
+                command_name = module_name.removesuffix("_exec")
+                if command_name not in allowed_commands:
+                    results_string += (
+                        f"[Error] Command <{cmd.command}> is not allowed for role "
+                        f"{agent_type}.\n\n"
+                    )
+                    continue
                 executor = importlib.import_module(f"command_executors.{module_name}")
 
                 cmd_result = executor.execute(cmd.attributes, cmd.content, chat_context_state)
