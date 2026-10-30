@@ -9,11 +9,18 @@ from infrastructure.debug_colors import debug_print
 N_SEARCH_RESULTS = 5
 
 def load_system_prompt() -> str:
-    """Loads the static Ingestor instructions from the global workspace."""
-    prompt_path = Path.home() / ".agents" / "prompts" / "ingestor_instructions.md"
+    """Loads ingestor instructions from the global workspace or repository."""
+    global_path = Path.home() / ".agents" / "prompts" / "ingestor_instructions.md"
+    prompt_path = (
+        global_path
+        if global_path.exists()
+        else Path(__file__).resolve().parents[1] / "prompts" / "ingestor_instructions.md"
+    )
     
     if not prompt_path.exists():
-        raise FileNotFoundError(f"Ingestor instructions not found at {prompt_path}")
+        raise FileNotFoundError(
+            f"Ingestor instructions not found at {global_path} or {prompt_path}"
+        )
         
     with open(prompt_path, "r", encoding="utf-8") as f:
         return f.read()
