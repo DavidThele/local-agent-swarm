@@ -4,10 +4,12 @@ from pathlib import Path
 from infrastructure.workspace import create_chat_instance
 from infrastructure.agent_loop import run_agent
 from infrastructure.debug_colors import debug_print
+from pipelines.performance_analyzer import analyze_session
 
-def start_swarm_session(user_prompt: str, chat_id: str = "") -> dict:
+def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool = True) -> dict:
     """
-    Initializes a local/global symlinked chat workspace and boots the Main Orchestrator.
+    Initializes a local/global symlinked chat workspace, boots the Main Orchestrator,
+    and runs the Phase 5 Performance Analyzer post-mortem upon completion.
     """
     chat_id, local_chat_dir = create_chat_instance(chat_id=chat_id)
     
@@ -31,15 +33,20 @@ def start_swarm_session(user_prompt: str, chat_id: str = "") -> dict:
     
     debug_print(f"\n[SwarmCLI] Session {chat_id} finished with status: {result['status']}", "success")
     print(result["result"])
+
+    if run_optimizer:
+        try:
+            analyze_session(str(local_chat_dir))
+        except Exception as e:
+            debug_print(f"[SwarmCLI] Optimizer post-mortem failed: {e}", "warning")
+
     return result
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        prompt = " ".join(sys.argv[1:])
-    else:
-        prompt = input("Enter task for the Agent Swarm: ").strip()
+    prompt = input("Enter task for the Agent Swarm: ").strip()
+    run_optimizer = input("Run Performance Analyzer after completion? [y/n]: ").strip().lower() == "y"
         
     if prompt:
-        start_swarm_session(prompt)
+        start_swarm_session(prompt, run_optimizer=run_optimizer)
     else: 
         debug_print("[SwarmCLI] No prompt provided. Exiting.", "error")

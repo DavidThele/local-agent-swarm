@@ -6,8 +6,9 @@ from infrastructure.debug_colors import debug_print
 
 # Leaf tags that frequently contain raw code, shell operators (&&, <, >), or nested example tags
 RAW_TEXT_TAGS = (
-    "Content", "Summary", "Command", "Instructions",
-    "Context", "DoD", "Result", "Query", "Text", "New", "Existing"
+    "Content", "Summary", "Command", "Instructions", 
+    "Context", "DoD", "Result", "Query", "Text", "New", "Existing",
+    "Bottlenecks", "Recommendations", "EfficiencyScore"
 )
 
 @dataclass
