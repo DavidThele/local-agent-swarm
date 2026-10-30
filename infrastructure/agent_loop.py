@@ -12,7 +12,7 @@ def load_prompt(role: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
-def drain_child_notifications(chat_context_state: dict, block_mode: str = 'any') -> str:
+def drain_child_notifications(chat_context_state: dict, block_mode: str | None = None) -> str:
     """
     Drains any completed child agent results from the parent's notification_queue.
     If block_mode is 'any', blocks until at least 1 active child completes.
@@ -82,7 +82,7 @@ def run_agent(
 
     for iteration in range(MAX_ITERATIONS):
         # 0. Check if any background child agents finished before sending prompt
-        async_updates = drain_child_notifications(chat_context_state, block_mode='any')
+        async_updates = drain_child_notifications(chat_context_state)
         if async_updates:
             current_prompt += f"\n{async_updates}"
 
