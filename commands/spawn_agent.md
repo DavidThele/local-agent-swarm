@@ -1,7 +1,7 @@
 # Command: SpawnAgent
 
 **Description:**
-Spawns a new autonomous agent to delegate a specific sub-task. The calling agent will wait until the spawned agent marks itself as done before continuing.
+Spawns a new autonomous agent in a background thread to delegate a specific sub-task. Execution returns immediately with the spawned agent's ID so you can spawn multiple agents in parallel or run other commands. Use `<WaitForAgents />` when you are ready to pause and wait for spawned agents to report back.
 
 **Attributes:**
 - `type` (required): The role of the spawned agent (e.g., `WORKER`, `SUB_ORCHESTRATOR`).
