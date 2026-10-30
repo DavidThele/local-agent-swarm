@@ -39,14 +39,15 @@ Emit one or more <ExtractChunk> tags. Splitting concurrent multi-tasking into mu
 ---
 
 ### Turn 2: Synthesis & Database Reconciliation (Phase 2)
-The orchestrator intercepts your Phase 1 output, executes a vector similarity lookup against existing database records, and passes the candidate matches back as a user message.
+The immediately preceding model message contains your Phase 1 output. The orchestrator executes a vector similarity lookup against existing database records and passes only the candidate matches back as a user message. The new chunk text is intentionally not repeated in this message to avoid duplicate tokens.
 
 Input Schema (Phase 2):
 
+Each `<Compare chunk_index="N">` corresponds to the Nth `<ExtractChunk>` in your immediately preceding Phase 1 response. Retrieve the new chunk text from that response and use it with the listed existing records.
+
 <!-- Scenario A: Existing overlap found -->
 ```
-<Compare>
-    <New>User uses React for project JumboCode.</New>
+<Compare chunk_index="1">
     <Existing id="chunk_8a9b">User uses React for frontend development.</Existing>
     <Existing id="chunk_2c3d">User prefers Python for backend APIs.</Existing>
 </Compare>
@@ -54,18 +55,16 @@ Input Schema (Phase 2):
 
 <!-- Scenario B: No existing overlap in database -->
 ```
-<Compare>
-    <New>User configured Karabiner-Elements leader key on macOS to trigger iTerm and VS Code.</New>
-</Compare>
+<Compare chunk_index="2" />
 ```
 
 Resolution Logic:
-1. **Direct Commit (No Overlap):** If a <Compare> block contains no <Existing> elements, emit a <CommitChunk> with the <New> text.
-2. **Synthesis & Replacement:** If <New> expands, updates, or conditionally qualifies one or more <Existing> records:
+1. **Direct Commit (No Overlap):** If a <Compare> block contains no <Existing> elements, emit a <CommitChunk> with the corresponding Phase 1 chunk text.
+2. **Synthesis & Replacement:** If the corresponding Phase 1 chunk expands, updates, or conditionally qualifies one or more <Existing> records:
    - Emit <DeleteChunk id="..."/> for each superseded or consolidated existing record.
    - Emit a single consolidated <CommitChunk> carrying the merged topic paragraph.
 3. **Irrelevant / Unrelated Matches:** Do not delete <Existing> records that pertain to a different topic (e.g., leaving a backend Python chunk untouched when updating frontend React knowledge).
-4. **No-Op:** If <New> provides zero new information compared to <Existing>, output nothing for that block.
+4. **No-Op:** If the corresponding Phase 1 chunk provides zero new information compared to <Existing>, output nothing for that block.
 
 Output Format (Phase 2):
 

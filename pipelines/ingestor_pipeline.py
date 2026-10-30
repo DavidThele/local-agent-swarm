@@ -61,12 +61,11 @@ def process_telemetry(raw_log: str):
     # ==========================================
     # Build the <Compare> blocks for the LLM
     comparisons_xml = ""
-    for chunk_text in new_chunks:
+    for chunk_index, chunk_text in enumerate(new_chunks, start=1):
         # Fetch the N_SEARCH_RESULTS most semantically similar existing chunks
         similar_chunks = search_similar_chunks(chunk_text, n_results=N_SEARCH_RESULTS)
         
-        comparisons_xml += "<Compare>\n"
-        comparisons_xml += f"    <New>{chunk_text}</New>\n"
+        comparisons_xml += f'<Compare chunk_index="{chunk_index}">\n'
         for sim in similar_chunks:
             comparisons_xml += f"    <Existing id=\"{sim['id']}\">{sim['text']}</Existing>\n"
         comparisons_xml += "</Compare>\n\n"
@@ -74,7 +73,11 @@ def process_telemetry(raw_log: str):
     debug_print("[Ingestor] Starting Phase 2: Synthesizing memory constraints...", "info")
     
     phase2_prompt = (
-        "Execute Phase 2 (Synthesis & Database Management) on the following comparisons:\n\n"
+        "Execute Phase 2 (Synthesis & Database Management). The immediately preceding model message "
+        "contains the Phase 1 extraction XML. Use that response as the source for each new chunk; "
+        "do not expect the new chunk text to be repeated below. Each <Compare chunk_index=\"N\"> "
+        "corresponds to the Nth <ExtractChunk> from Phase 1. Reconcile each new chunk with its "
+        "listed existing records, then emit the required database commands.\n\n"
         f"{comparisons_xml}"
     )
     
