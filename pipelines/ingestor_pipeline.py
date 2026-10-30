@@ -43,12 +43,12 @@ def process_telemetry(raw_log: str):
         if cmd.command == "ExtractChunk":
             # Safely extract text whether the LLM nested it in <Text> tags or not
             if isinstance(cmd.content, dict) and "Text" in cmd.content:
-                # Handle cases where multiple <Text> tags might be parsed as a list
                 text_val = cmd.content["Text"]
                 chunk_str = text_val[0] if isinstance(text_val, list) else text_val
-                new_chunks.append(chunk_str)
-            elif isinstance(cmd.content, str):
-                new_chunks.append(cmd.content)
+                if chunk_str:
+                    new_chunks.append(chunk_str)
+            elif isinstance(cmd.content, str) and cmd.content.strip():
+                new_chunks.append(cmd.content.strip())
                 
     if not new_chunks:
         debug_print("[Ingestor] No actionable chunks extracted from log. Exiting.", "warning")
