@@ -5,7 +5,7 @@ Pauses execution and prompts the user for clarification or a decision. Execution
 
 **Child Tags:**
 - `<Text>`: The question to ask the user.
-- `<Options>`: A wrapper for multiple `<Option>` tags. Always include an option titled exactly "Other".
+- `<Options>`: A wrapper for multiple `<Option>` tags. Never include an "Other" option, that will be appended automatically.
 
 **Example Usage:**
 <Question>
