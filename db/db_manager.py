@@ -20,7 +20,7 @@ def get_db_client(global_dir: str = "~/.agents"):
     collection = client.get_or_create_collection(name="semantic_memory")
     return collection
 
-def add_chunk(text: str, metadata: Dict[str, Any] = {}) -> str:
+def add_chunk(text: str, metadata: Dict[str, Any] | None = None) -> str:
     """Adds a new chunk to the database and returns its generated ID."""
     collection = get_db_client()
     chunk_id = f"chunk_{uuid.uuid4().hex[:12]}"
