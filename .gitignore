@@ -5,3 +5,4 @@ __pycache__
 *.sqlite3
 *.pickle
 ingestion_state.json
+moniter_data/*

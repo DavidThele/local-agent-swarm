@@ -1,4 +1,5 @@
 
+import os
 import json
 from pathlib import Path
 from infrastructure.scrubber import scrub_text
@@ -7,7 +8,9 @@ from infrastructure.debug_colors import debug_print
 from datetime import date
 
 # Core Paths
-LOG_DIR = Path("/Users/davidthele/Documents/Python_Code/moniter/moniter_data")
+LOG_DIR = Path(
+    os.environ.get("AGENTS_LOG_DIR", str(Path.cwd() / "moniter_data"))
+).expanduser()
 STATE_FILE = Path.home() / ".agents" / "db" / "ingestion_state.json"
 LINES_PER_CHUNK = 200
 
