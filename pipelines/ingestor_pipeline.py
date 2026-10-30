@@ -1,5 +1,6 @@
 from pathlib import Path
 from datetime import datetime
+from xml.sax.saxutils import escape
 from infrastructure.prompt_router import send_prompt, GEMINI_3_1_FLASH_LITE
 from db.db_manager import add_chunk, delete_chunk, search_similar_chunks, clear
 from infrastructure.parser import parse_llm_output
@@ -67,7 +68,8 @@ def process_telemetry(raw_log: str):
         
         comparisons_xml += f'<Compare chunk_index="{chunk_index}">\n'
         for sim in similar_chunks:
-            comparisons_xml += f"    <Existing id=\"{sim['id']}\">{sim['text']}</Existing>\n"
+            existing_text = escape(str(sim["text"]))
+            comparisons_xml += f'    <Existing id="{sim["id"]}">{existing_text}</Existing>\n'
         comparisons_xml += "</Compare>\n\n"
         
     debug_print("[Ingestor] Starting Phase 2: Synthesizing memory constraints...", "info")
