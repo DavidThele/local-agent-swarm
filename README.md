@@ -22,8 +22,11 @@ supported by the installed Google GenAI SDK before starting a session.
 Run the CLI from the project directory:
 
 ```bash
-python3 swarm_cli.py "Describe the task for the agent swarm"
+python3 swarm_cli.py
 ```
+
+The CLI prompts first for the task and then asks whether to run the performance
+analyzer after the session completes.
 
 The CLI uses the current working directory as the workspace root. File reads and
 writes inside that directory proceed normally. Reads and writes outside it prompt
