@@ -1,5 +1,6 @@
 import sys
 import queue
+from pathlib import Path
 from infrastructure.workspace import create_chat_instance
 from infrastructure.agent_loop import run_agent
 from infrastructure.debug_colors import debug_print
@@ -12,6 +13,7 @@ def start_swarm_session(user_prompt: str, chat_id: str = "") -> dict:
     
     chat_context_state = {
         "local_chat_dir": str(local_chat_dir),
+        "workspace_root": str(Path.cwd().resolve()),
         "worker_id": "main_orchestrator",
         "notification_queue": queue.Queue(),
         "active_children": {}

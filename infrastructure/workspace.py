@@ -3,6 +3,50 @@ import shutil
 from pathlib import Path
 from infrastructure.debug_colors import debug_print
 
+def resolve_workspace_path(path: str, workspace_root: str | Path | None = None) -> tuple[Path, Path]:
+    root = Path(workspace_root or Path.cwd()).expanduser().resolve()
+    requested = Path(path).expanduser()
+    resolved = (requested if requested.is_absolute() else root / requested).resolve()
+    return root, resolved
+
+def is_within_workspace(path: Path, workspace_root: Path) -> bool:
+    try:
+        path.relative_to(workspace_root)
+        return True
+    except ValueError:
+        return False
+
+def request_file_access(
+    operation: str,
+    path: Path,
+    diff_provider=None,
+) -> bool:
+    from infrastructure.concurrency import TERMINAL_LOCK
+
+    with TERMINAL_LOCK:
+        print(
+            f"\n[File Access] {operation.upper()} request outside the authorized workspace:\n"
+            f"File: {path}\n"
+            "Approve? [y]es, [n]o, [d]iff: "
+        )
+        while True:
+            response = input().strip().lower()
+            if response in {"y", "n"}:
+                return response == "y"
+            if response == "d":
+                if diff_provider is None:
+                    print("[File Access] No diff is available for a read request.")
+                else:
+                    print(diff_provider())
+                print("Approve? [y]es or [n]o: ")
+                while True:
+                    response = input().strip().lower()
+                    if response in {"y", "n"}:
+                        return response == "y"
+                    print("Please enter 'y' or 'n'.")
+            else:
+                print("Please enter 'y', 'n', or 'd'.")
+
 def init_global_workspace() -> Path:
     """
     Initializes the global workspace in the user's home directory (~/.agents).

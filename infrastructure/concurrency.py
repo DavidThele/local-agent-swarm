@@ -25,6 +25,7 @@ def spawn_background_agent(
     # Create an isolated context_state for the child so its own children report to IT, not the grandparent
     child_context_state = {
         "local_chat_dir": parent_context_state.get("local_chat_dir", ".agents/chats/default"),
+        "workspace_root": parent_context_state.get("workspace_root"),
         "worker_id": agent_id,
         "notification_queue": queue.Queue(),
         "active_children": {}

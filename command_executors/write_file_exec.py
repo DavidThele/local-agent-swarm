@@ -1,5 +1,7 @@
 import uuid
+import difflib
 from pathlib import Path
+from infrastructure.workspace import is_within_workspace, request_file_access, resolve_workspace_path
 
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
     target_path = attributes.get("path")
@@ -17,7 +19,27 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         return "[Error] WriteFile requires a 'path' attribute."
         
     try:
-        target_file = Path(target_path)
+        workspace_root, target_file = resolve_workspace_path(
+            target_path, context_state.get("workspace_root")
+        )
+
+        def build_diff() -> str:
+            try:
+                old_content = target_file.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                old_content = ""
+            diff = difflib.unified_diff(
+                old_content.splitlines(keepends=True),
+                file_content.splitlines(keepends=True),
+                fromfile=str(target_file),
+                tofile=str(target_file),
+            )
+            return "".join(diff) or "[File Access] No content changes."
+
+        if not is_within_workspace(target_file, workspace_root):
+            if not request_file_access("write", target_file, build_diff):
+                return f"[FILE_ACCESS_DENIED] Write denied for {target_file}."
+
         target_file.parent.mkdir(parents=True, exist_ok=True)
         with open(target_file, "w", encoding="utf-8") as f:
             f.write(file_content)

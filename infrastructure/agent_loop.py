@@ -100,6 +100,7 @@ def run_agent(
         chat_context_state["notification_queue"] = queue.Queue()
     if "active_children" not in chat_context_state:
         chat_context_state["active_children"] = {}
+    chat_context_state.setdefault("workspace_root", str(Path.cwd().resolve()))
 
     system_prompt = load_prompt(agent_type.lower())
 
