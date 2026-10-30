@@ -12,4 +12,17 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["infrastructure*", "pipelines*", "command_executors*", "db*"]
+include = [
+	"infrastructure*",
+	"pipelines*",
+	"command_executors*",
+	"db*",
+	"commands*",
+	"prompts*",
+	"config*",
+]
+
+[tool.setuptools.package-data]
+commands = ["*.md"]
+prompts = ["*.md"]
+config = ["*.md"]
