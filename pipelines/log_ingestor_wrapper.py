@@ -11,7 +11,9 @@ from datetime import date
 LOG_DIR = Path(
     os.environ.get("AGENTS_LOG_DIR", str(Path.cwd() / "moniter_data"))
 ).expanduser()
-STATE_FILE = Path.home() / ".agents" / "db" / "ingestion_state.json"
+STATE_FILE = Path(
+    os.environ.get("AGENTS_DB_DIR", str(Path.home() / ".agents" / "db"))
+).expanduser() / "ingestion_state.json"
 LINES_PER_CHUNK = 200
 
 def load_state() -> dict:
