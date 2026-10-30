@@ -32,6 +32,12 @@ def load_security_list(filepath: Path) -> set:
 
     return items
 
+def resolve_security_file(filename: str) -> Path:
+    global_path = Path.home() / ".agents" / "config" / filename
+    if global_path.exists():
+        return global_path
+    return Path(__file__).resolve().parents[1] / "config" / filename
+
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
     if isinstance(content, dict):
         cmd_string = content.get("Command", "").strip()
@@ -43,9 +49,8 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         return "[Error] No command provided."
 
     # Resolve the global workspace path
-    global_root = Path.home() / ".agents"
-    whitelist_path = global_root / "config" / "cmd_whitelist.md"
-    blacklist_path = global_root / "config" / "cmd_blacklist.md"
+    whitelist_path = resolve_security_file("cmd_whitelist.md")
+    blacklist_path = resolve_security_file("cmd_blacklist.md")
 
     WHITELIST = load_security_list(whitelist_path)
     BLACKLIST = load_security_list(blacklist_path) | BASELINE_BLACKLIST
