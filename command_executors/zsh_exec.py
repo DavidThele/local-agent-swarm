@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 from pathlib import Path
 from infrastructure.debug_colors import debug_print
@@ -53,6 +54,14 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
     if not cmd_string:
         return "[Error] No command provided."
 
+    try:
+        command_args = shlex.split(cmd_string)
+    except ValueError as exc:
+        return f"[Error] Invalid shell command syntax: {exc}"
+
+    if not command_args:
+        return "[Error] No command provided."
+
     # Resolve the global workspace path
     whitelist_path = resolve_security_file("cmd_whitelist.md")
     blacklist_path = resolve_security_file("cmd_blacklist.md")
@@ -60,17 +69,11 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
     WHITELIST = load_security_list(whitelist_path)
     BLACKLIST = load_security_list(blacklist_path) | BASELINE_BLACKLIST
 
-    base_cmd = cmd_string.split()[0]
+    base_cmd = command_args[0]
 
-    # Check Blacklist (Operators, newlines, or subshell expansions)
+    # Reject shell operators because execution does not invoke a shell.
     if any(op in cmd_string for op in BLACKLIST):
-        with TERMINAL_LOCK:
-            approval = input(
-                f"\n[SECURITY ALERT] Command contains blacklisted operators or subshells. Approve execution?\n"
-                f"Command: {cmd_string}\n(Y/N): "
-            )
-        if approval.strip().lower() != "y":
-            return "[System] Command execution denied by user."
+        return "[System] Command execution denied: shell operators are not supported."
 
     # Check Greylist (Command not explicitly whitelisted)
     elif base_cmd not in WHITELIST:
@@ -85,8 +88,8 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
     # Execute
     try:
         result = subprocess.run(
-            cmd_string,
-            shell=True,
+            command_args,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=timeout
