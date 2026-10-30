@@ -1,5 +1,4 @@
 import uuid
-import shutil
 from pathlib import Path
 from infrastructure.debug_colors import debug_print
 
@@ -112,7 +111,9 @@ def create_chat_instance(chat_id: str = '') -> tuple[str, Path]:
             if global_symlink_path.is_symlink():
                 global_symlink_path.unlink()
             else:
-                shutil.rmtree(global_symlink_path)
+                raise FileExistsError(
+                    f"Chat ID already exists as a directory: {global_symlink_path}"
+                )
                 
         # Create the symlink pointing the global chat ID to the absolute path of the local chat directory
         global_symlink_path.symlink_to(local_chat_dir.resolve(), target_is_directory=True)
