@@ -4,19 +4,54 @@ from pathlib import Path
 from infrastructure.prompt_router import send_prompt, GEMINI_3_8_FLASH, GEMINI_3_1_FLASH_LITE
 from infrastructure.parser import parse_llm_output
 
-# Maximum times an agent can loop (action -> observe) before being forced to fail.
 MAX_ITERATIONS = 12
 
+# Role-based command access table
+ROLE_COMMANDS = {
+    "main_orchestrator": ["search_db", "spawn_agent", "wait_for_agents", "question", "mark_done"],
+    "sub_orchestrator": ["spawn_agent", "wait_for_agents", "mark_done"],
+    "worker": ["zsh", "write_file", "read_file", "list_directory", "mark_done"],
+}
+
 def load_prompt(role: str) -> str:
-    path = Path.home() / ".agents" / "prompts" / f"{role}.md"
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+    """
+    Loads the global AGENTS.md context, the role's system prompt, 
+    and the markdown schemas for all commands available to that role.
+    """
+    base_dir = Path.home() / ".agents"
+    role_key = role.lower()
+    
+    sections = []
+    
+    # 1. Global AGENTS.md profile
+    agents_md = base_dir / "AGENTS.md"
+    if agents_md.exists():
+        sections.append(agents_md.read_text(encoding="utf-8").strip())
+        
+    # 2. Role-specific prompt
+    role_path = base_dir / "prompts" / f"{role_key}.md"
+    if not role_path.exists():
+        raise FileNotFoundError(f"Role prompt not found: {role_path}")
+    sections.append(role_path.read_text(encoding="utf-8").strip())
+    
+    # 3. Inject available command documentation
+    allowed_cmds = ROLE_COMMANDS.get(role_key, [])
+    if allowed_cmds:
+        cmd_docs = ["## Available XML Commands\nYou may ONLY use the following XML commands:"]
+        for cmd_name in allowed_cmds:
+            cmd_path = base_dir / "commands" / f"{cmd_name}.md"
+            if cmd_path.exists():
+                cmd_docs.append(cmd_path.read_text(encoding="utf-8").strip())
+        sections.append("\n\n---\n\n".join(cmd_docs))
+        
+    return "\n\n========================================\n\n".join(sections)
 
 def drain_child_notifications(chat_context_state: dict, block_mode: str | None = None) -> str:
     """
     Drains any completed child agent results from the parent's notification_queue.
-    If block_mode is 'any', blocks until at least 1 active child completes.
-    If block_mode is 'all', blocks until all currently active children complete.
+    - block_mode=None: Non-blocking poll (returns immediately if queue is empty).
+    - block_mode='any': Blocks until at least 1 active child completes.
+    - block_mode='all': Blocks until all currently active children complete.
     """
     notif_queue: queue.Queue = chat_context_state["notification_queue"]
     active_children: dict = chat_context_state["active_children"]
@@ -61,7 +96,6 @@ def run_agent(
     """
     print(f"\n[Swarm] Booting {agent_type.upper()} ({agent_id})...")
 
-    # Ensure async tracking structures exist for this agent instance
     if "notification_queue" not in chat_context_state:
         chat_context_state["notification_queue"] = queue.Queue()
     if "active_children" not in chat_context_state:
@@ -69,9 +103,8 @@ def run_agent(
 
     system_prompt = load_prompt(agent_type.lower())
 
-    # Initialize the agent's first prompt with its assignment
     current_prompt = f"{system_prompt}\n\n"
-    current_prompt += f"=== YOUR ASSIGNMENT ===\n"
+    current_prompt += "=== YOUR ASSIGNMENT ===\n"
     current_prompt += f"<Instructions>{instructions}</Instructions>\n"
     current_prompt += f"<Context>{context}</Context>\n"
     if dod:
@@ -81,8 +114,8 @@ def run_agent(
     chat_history = []
 
     for iteration in range(MAX_ITERATIONS):
-        # 0. Check if any background child agents finished before sending prompt
-        async_updates = drain_child_notifications(chat_context_state)
+        # 0. Non-blocking check if any background child agents finished before sending prompt
+        async_updates = drain_child_notifications(chat_context_state, block_mode=None)
         if async_updates:
             current_prompt += f"\n{async_updates}"
 
@@ -99,7 +132,6 @@ def run_agent(
         commands = parse_llm_output(llm_output)
 
         if not commands:
-            # If the agent has active children running and outputted no commands, auto-wait for the next child
             if chat_context_state["active_children"]:
                 current_prompt = drain_child_notifications(chat_context_state, block_mode="any")
                 continue
@@ -121,14 +153,11 @@ def run_agent(
 
                 cmd_result = executor.execute(cmd.attributes, cmd.content, chat_context_state)
 
-                # Handle WaitForAgents signal
                 if cmd_result.startswith("[WAIT_FOR_AGENTS:"):
                     wait_mode = cmd_result.split(":")[1].rstrip("]")
                     continue
 
-                # Check if the agent called MarkDone
                 if cmd_result.startswith("[STATUS_DONE]"):
-                    # Guardrail: Prevent parent from marking done while child threads are still running
                     if chat_context_state["active_children"]:
                         active_ids = list(chat_context_state["active_children"].keys())
                         results_string += (
