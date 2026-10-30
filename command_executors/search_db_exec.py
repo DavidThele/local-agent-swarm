@@ -14,7 +14,12 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
     if not query:
         return "[Error] SearchDB requires a <Query> tag with text."
         
-    n_results = int(attributes.get("n_results", 5))
+    try:
+        n_results = int(attributes.get("n_results", 5))
+    except (TypeError, ValueError):
+        return "[Error] SearchDB n_results must be an integer."
+    if n_results <= 0:
+        return "[Error] SearchDB n_results must be greater than zero."
     
     try:
         results = search_similar_chunks(query, n_results=n_results)

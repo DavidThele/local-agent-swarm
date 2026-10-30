@@ -20,7 +20,12 @@ def get_tree(dir_path: Path, current_depth: int, max_depth: int) -> list:
 
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
     path = attributes.get("path")
-    depth = int(attributes.get("depth", 1))
+    try:
+        depth = int(attributes.get("depth", 1))
+    except (TypeError, ValueError):
+        return "[Error] ListDirectory depth must be an integer."
+    if depth < 0:
+        return "[Error] ListDirectory depth must be non-negative."
     
     if not path or not os.path.exists(path):
         return f"[Error] Directory not found: {path}"

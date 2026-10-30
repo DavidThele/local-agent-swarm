@@ -43,7 +43,12 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         cmd_string = content.get("Command", "").strip()
     else:
         cmd_string = str(content).strip()
-    timeout = int(attributes.get("timeout", 30))
+    try:
+        timeout = int(attributes.get("timeout", 30))
+    except (TypeError, ValueError):
+        return "[Error] Zsh timeout must be an integer."
+    if timeout <= 0:
+        return "[Error] Zsh timeout must be greater than zero."
 
     if not cmd_string:
         return "[Error] No command provided."

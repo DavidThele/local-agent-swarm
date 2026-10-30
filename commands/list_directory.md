@@ -5,7 +5,7 @@ Lists the contents of a directory. Prefer this over using `<Zsh>` with `ls` as i
 
 **Attributes:**
 - `path` (required): The absolute filepath of the directory to list.
-- `depth` (optional): Specify the maxdepth to recursively list files through. Default is 1 (current directory only).
+- `depth` (optional): Specify the maxdepth to recursively list files through. Default is 1 (current directory only). Must be a non-negative integer.
 
 **Example Usage:**
 <ListDirectory path="/Users/davidthele/Documents/project/src" depth="3" />
