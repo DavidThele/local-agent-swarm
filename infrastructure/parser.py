@@ -14,7 +14,7 @@ RAW_TEXT_TAGS = (
 @dataclass
 class ParsedCommand:
     command: str                         # The root tag name (e.g., "SpawnAgent")
-    attributes: Dict[str, str]           # Tag attributes (e.g., {"type": "WORKER"})
+    attributes: Dict[str, str]           # Tag attributes (e.g., {"type": "worker"})
     content: Union[str, Dict[str, Any]]  # Text content, or a dictionary of nested tags
     raw: str                             # The raw XML string
 

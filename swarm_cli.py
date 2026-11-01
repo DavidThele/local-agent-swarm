@@ -3,6 +3,7 @@ import queue
 from pathlib import Path
 from infrastructure.workspace import create_chat_instance
 from infrastructure.agent_loop import run_agent
+from infrastructure.agent_types import AgentType
 from infrastructure.debug_colors import debug_print
 from pipelines.performance_analyzer import analyze_session
 
@@ -16,14 +17,14 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
     chat_context_state = {
         "local_chat_dir": str(local_chat_dir),
         "workspace_root": str(Path.cwd().resolve()),
-        "worker_id": "main_orchestrator",
+        "worker_id": AgentType.MAIN_ORCHESTRATOR.id_prefix,
         "notification_queue": queue.Queue(),
         "active_children": {}
     }
     
     debug_print(f"[SwarmCLI] Starting session {chat_id}", "system")
     result = run_agent(
-        agent_type="MAIN_ORCHESTRATOR",
+        agent_type=AgentType.MAIN_ORCHESTRATOR,
         instructions=user_prompt,
         context=f"Active Working Directory: {local_chat_dir.parent.parent.parent}",
         dod="Fulfill the user's request completely and accurately, then call <MarkDone>.",

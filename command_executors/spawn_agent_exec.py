@@ -1,7 +1,11 @@
 from infrastructure.concurrency import spawn_background_agent
+from infrastructure.agent_types import AgentType
 
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
-    agent_type = attributes.get("type", "WORKER")
+    try:
+        agent_type = AgentType.parse(attributes.get("type", AgentType.WORKER.value))
+    except ValueError as exc:
+        return f"[Error] {exc}"
 
     instructions = ""
     agent_context = ""
@@ -30,9 +34,9 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         parent_context_state=context_state
     )
 
-    print(f"  [SpawnAgent] Launched {agent_type} ({agent_id}) asynchronously in background.")
+    print(f"  [SpawnAgent] Launched {agent_type.label} ({agent_id}) asynchronously in background.")
     return (
-        f"[System] Successfully spawned {agent_type} with ID '{agent_id}' in the background. "
+        f"[System] Successfully spawned {agent_type.label} with ID '{agent_id}' in the background. "
         f"You will receive a notification in a subsequent iteration as soon as '{agent_id}' finishes. "
         f"You may continue executing other commands now, or output <WaitForAgents /> if you have nothing else to do until it completes."
     )

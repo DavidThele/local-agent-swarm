@@ -6,3 +6,5 @@ __pycache__
 *.pickle
 ingestion_state.json
 moniter_data/*
+prompts/agents_prompt_history
+AGENTS.md

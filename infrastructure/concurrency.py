@@ -1,12 +1,13 @@
 import threading
 import queue
 import uuid
+from infrastructure.agent_types import AgentType
 
 # Global lock to prevent multiple background threads from asking for terminal input() simultaneously
 TERMINAL_LOCK = threading.Lock()
 
 def spawn_background_agent(
-    agent_type: str,
+    agent_type: AgentType | str,
     instructions: str,
     context: str,
     dod: str,
@@ -18,7 +19,9 @@ def spawn_background_agent(
     """
     from infrastructure.agent_loop import run_agent
 
-    agent_id = f"{agent_type.lower()}_{uuid.uuid4().hex[:6]}"
+    agent_type = AgentType.parse(agent_type)
+
+    agent_id = f"{agent_type.id_prefix}_{uuid.uuid4().hex[:6]}"
     parent_queue: queue.Queue = parent_context_state["notification_queue"]
     active_children: dict = parent_context_state["active_children"]
 
@@ -49,7 +52,7 @@ def spawn_background_agent(
 
         # Notify the parent agent via its thread-safe queue
         notification_msg = (
-            f"--- [ASYNC CHILD AGENT COMPLETED: {agent_id} ({agent_type}) | STATUS: {status}] ---\n"
+            f"--- [ASYNC CHILD AGENT COMPLETED: {agent_id} ({agent_type.label}) | STATUS: {status}] ---\n"
             f"{output}\n"
         )
         parent_queue.put((agent_id, notification_msg))
@@ -57,7 +60,7 @@ def spawn_background_agent(
     # Register child as active before starting thread
     thread = threading.Thread(target=_thread_target, name=agent_id, daemon=True)
     active_children[agent_id] = {
-        "type": agent_type,
+        "type": agent_type.value,
         "thread": thread,
         "dod": dod
     }

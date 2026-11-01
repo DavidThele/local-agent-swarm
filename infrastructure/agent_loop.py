@@ -3,17 +3,11 @@ import json
 import queue
 from datetime import datetime
 from pathlib import Path
-from infrastructure.prompt_router import send_prompt, GEMINI_3_8_FLASH, GEMINI_3_1_FLASH_LITE
+from infrastructure.prompt_router import send_prompt
 from infrastructure.parser import parse_llm_output
+from infrastructure.agent_types import AgentType
 
 MAX_ITERATIONS = 12
-
-# Role-based command access table
-ROLE_COMMANDS = {
-    "main_orchestrator": ["search_db", "spawn_agent", "wait_for_agents", "question", "mark_done"],
-    "sub_orchestrator": ["spawn_agent", "wait_for_agents", "mark_done"],
-    "worker": ["zsh", "write_file", "read_file", "list_directory", "mark_done"],
-}
 
 def _resolve_resource_file(relative_path: str) -> Path:
     """Checks ~/.agents first, then falls back to the repository root."""
@@ -22,12 +16,12 @@ def _resolve_resource_file(relative_path: str) -> Path:
         return global_path
     return Path(__file__).resolve().parents[1] / relative_path
 
-def load_prompt(role: str) -> str:
+def load_prompt(agent_type: AgentType | str) -> str:
     """
     Loads the global AGENTS.md context, the role's system prompt, 
     and the markdown schemas for all commands available to that role.
     """
-    role_key = role.lower()
+    role = AgentType.parse(agent_type)
     sections = []
     
     # 1. Global AGENTS.md profile
@@ -36,13 +30,13 @@ def load_prompt(role: str) -> str:
         sections.append(agents_md.read_text(encoding="utf-8").strip())
         
     # 2. Role-specific prompt
-    role_path = _resolve_resource_file(f"prompts/{role_key}.md")
+    role_path = _resolve_resource_file(f"prompts/{role.prompt_filename}")
     if not role_path.exists():
         raise FileNotFoundError(f"Role prompt not found: {role_path}")
     sections.append(role_path.read_text(encoding="utf-8").strip())
     
     # 3. Inject available command documentation
-    allowed_cmds = ROLE_COMMANDS.get(role_key, [])
+    allowed_cmds = role.commands
     if allowed_cmds:
         cmd_docs = ["## Available XML Commands\nYou may ONLY use the following XML commands:"]
         for cmd_name in allowed_cmds:
@@ -56,7 +50,7 @@ def load_prompt(role: str) -> str:
 def save_agent_trace(
     chat_context_state: dict,
     agent_id: str,
-    agent_type: str,
+    agent_type: AgentType | str,
     instructions: str,
     dod: str,
     status: str,
@@ -65,13 +59,14 @@ def save_agent_trace(
     trace_events: list
 ):
     """Saves a JSON log of the agent's turns and costs into local_chat_dir for Phase 5 analysis."""
+    agent_type = AgentType.parse(agent_type)
     chat_dir = Path(chat_context_state.get("local_chat_dir", ".agents/chats/default"))
     chat_dir.mkdir(parents=True, exist_ok=True)
     
     trace_file = chat_dir / f"{agent_id}_trace.json"
     payload = {
         "agent_id": agent_id,
-        "agent_type": agent_type,
+        "agent_type": agent_type.value,
         "timestamp": datetime.now().isoformat(),
         "status": status,
         "iterations_used": iterations_used,
@@ -122,7 +117,7 @@ def drain_child_notifications(chat_context_state: dict, block_mode: str | None =
     return ""
 
 def run_agent(
-    agent_type: str,
+    agent_type: AgentType | str,
     instructions: str,
     context: str,
     dod: str,
@@ -132,7 +127,8 @@ def run_agent(
     """
     The core execution loop for a single agent.
     """
-    print(f"\n[Swarm] Booting {agent_type.upper()} ({agent_id})...")
+    agent_type = AgentType.parse(agent_type)
+    print(f"\n[Swarm] Booting {agent_type.label} ({agent_id})...")
 
     if "notification_queue" not in chat_context_state:
         chat_context_state["notification_queue"] = queue.Queue()
@@ -140,7 +136,7 @@ def run_agent(
         chat_context_state["active_children"] = {}
     chat_context_state.setdefault("workspace_root", str(Path.cwd().resolve()))
 
-    system_prompt = load_prompt(agent_type.lower())
+    system_prompt = load_prompt(agent_type)
 
     current_prompt = f"{system_prompt}\n\n"
     current_prompt += "=== YOUR ASSIGNMENT ===\n"
@@ -149,7 +145,7 @@ def run_agent(
     if dod:
         current_prompt += f"<DoD>{dod}</DoD>\n"
 
-    model_to_use = GEMINI_3_8_FLASH if agent_type.upper() == "MAIN_ORCHESTRATOR" else GEMINI_3_1_FLASH_LITE
+    model_to_use = agent_type.model
     chat_history = []
     trace_events = []
     cumulative_cost = 0.0
@@ -160,7 +156,7 @@ def run_agent(
         if async_updates:
             current_prompt += f"\n{async_updates}"
 
-        print(f"[{agent_type}:{agent_id}] Iteration {iteration + 1}/{MAX_ITERATIONS} - Thinking...")
+        print(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{MAX_ITERATIONS} - Thinking...")
 
         # 1. Get LLM Output
         llm_output, chat_history, cost = send_prompt(
@@ -197,12 +193,12 @@ def run_agent(
 
             try:
                 module_name = ''.join(['_'+c.lower() if c.isupper() else c for c in cmd.command]).lstrip('_') + "_exec"
-                allowed_commands = ROLE_COMMANDS.get(agent_type.lower(), [])
+                allowed_commands = agent_type.commands
                 command_name = module_name.removesuffix("_exec")
                 if command_name not in allowed_commands:
                     results_string += (
                         f"[Error] Command <{cmd.command}> is not allowed for role "
-                        f"{agent_type}.\n\n"
+                        f"{agent_type.value}.\n\n"
                     )
                     continue
                 executor = importlib.import_module(f"command_executors.{module_name}")
@@ -242,7 +238,7 @@ def run_agent(
                 chat_context_state, agent_id, agent_type, instructions,
                 dod, "success", iteration + 1, cumulative_cost, trace_events
             )
-            print(f"[{agent_type}:{agent_id}] Task Completed Successfully.")
+            print(f"[{agent_type.value}:{agent_id}] Task Completed Successfully.")
             return {"status": "success", "result": final_result}
 
         # 4. If the agent requested <WaitForAgents />, block here until child notifications arrive
@@ -264,5 +260,5 @@ def run_agent(
         chat_context_state, agent_id, agent_type, instructions,
         dod, "failed", MAX_ITERATIONS, cumulative_cost, trace_events
     )
-    print(f"[{agent_type}:{agent_id}] HIT HARD ITERATION CAP ({MAX_ITERATIONS}). Terminating loop.")
+    print(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_ITERATIONS}). Terminating loop.")
     return {"status": "failed", "result": "[System Error] Agent hit the maximum iteration limit without completing the DoD."}
