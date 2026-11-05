@@ -1,6 +1,6 @@
 import sys
 import time
-from google import genai
+from google import genai # type: ignore
 from google.genai.errors import APIError
 from google.genai.types import HttpOptions
 from google.genai import types

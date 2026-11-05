@@ -39,7 +39,7 @@ Emit one or more <ExtractChunk> tags. Splitting concurrent multi-tasking into mu
 ---
 
 ### Turn 2: Synthesis & Database Reconciliation (Phase 2)
-The immediately preceding model message contains your Phase 1 output. The orchestrator executes a vector similarity lookup against existing database records and passes only the candidate matches back as a user message. The new chunk text is intentionally not repeated in this message to avoid duplicate tokens.
+The immediately preceding model message contains your Phase 1 output. Read the extracted chunks from that model message in the conversation history; do not require or reproduce them in the new user message. The orchestrator executes a vector similarity lookup against existing database records and passes only the candidate matches back as a user message.
 
 Input Schema (Phase 2):
 

@@ -82,15 +82,16 @@ def process_telemetry(raw_log: str):
     debug_print("[Ingestor] Starting Phase 2: Synthesizing memory constraints...", "info")
     
     phase2_prompt = (
-        "Execute Phase 2 (Synthesis & Database Management). The immediately preceding model message "
-        "contains the Phase 1 extraction XML. Use that response as the source for each new chunk; "
-        "do not expect the new chunk text to be repeated below. Each <Compare chunk_index=\"N\"> "
+        "Execute Phase 2 (Synthesis & Database Management). Read the Phase 1 extraction XML from "
+        "the preceding model message in conversation history. Use that response as the source for "
+        "each new chunk; the new request below contains only comparison data. Each <Compare chunk_index=\"N\"> "
         "corresponds to the Nth <ExtractChunk> from Phase 1. Reconcile each new chunk with its "
         "listed existing records, then emit the required database commands.\n\n"
         f"{comparisons_xml}"
     )
     
-    # Re-use the conversation_id so the LLM retains the context of its Phase 1 outputs
+    # Re-use the full history so the Phase 1 model response is available without
+    # copying its extraction XML into the Phase 2 request.
     output2, _, _ = send_prompt(prompt_text=phase2_prompt, model=GEMINI_3_1_FLASH_LITE, chat_history=history1)
 
     debug_print(f"[Ingestor] Phase 2 output: {output2}\n", "data")

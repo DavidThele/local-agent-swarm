@@ -7,7 +7,8 @@ from infrastructure.prompt_router import send_prompt
 from infrastructure.parser import parse_llm_output
 from infrastructure.agent_types import AgentType
 
-MAX_ITERATIONS = 12
+MAX_WORKER_ITERATIONS = 10
+MAX_ORCHESTRATOR_ITERATIONS = 30
 
 def _resolve_resource_file(relative_path: str) -> Path:
     """Checks ~/.agents first, then falls back to the repository root."""
@@ -70,7 +71,7 @@ def save_agent_trace(
         "timestamp": datetime.now().isoformat(),
         "status": status,
         "iterations_used": iterations_used,
-        "max_iterations": MAX_ITERATIONS,
+        "max_iterations": MAX_ORCHESTRATOR_ITERATIONS if agent_type is AgentType.MAIN_ORCHESTRATOR else MAX_WORKER_ITERATIONS,
         "total_cost_usd": round(total_cost, 6),
         "instructions": instructions,
         "dod": dod,
@@ -150,13 +151,13 @@ def run_agent(
     trace_events = []
     cumulative_cost = 0.0
 
-    for iteration in range(MAX_ITERATIONS):
+    for iteration in range(MAX_WORKER_ITERATIONS):
         # 0. Non-blocking check if any background child agents finished before sending prompt
         async_updates = drain_child_notifications(chat_context_state, block_mode=None)
         if async_updates:
             current_prompt += f"\n{async_updates}"
 
-        print(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{MAX_ITERATIONS} - Thinking...")
+        print(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{MAX_WORKER_ITERATIONS} - Thinking...")
 
         # 1. Get LLM Output
         llm_output, chat_history, cost = send_prompt(
@@ -258,7 +259,7 @@ def run_agent(
 
     save_agent_trace(
         chat_context_state, agent_id, agent_type, instructions,
-        dod, "failed", MAX_ITERATIONS, cumulative_cost, trace_events
+        dod, "failed", MAX_WORKER_ITERATIONS, cumulative_cost, trace_events
     )
-    print(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_ITERATIONS}). Terminating loop.")
+    print(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_WORKER_ITERATIONS}). Terminating loop.")
     return {"status": "failed", "result": "[System Error] Agent hit the maximum iteration limit without completing the DoD."}
