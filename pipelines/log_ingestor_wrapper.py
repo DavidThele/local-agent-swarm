@@ -1,11 +1,13 @@
 
 import os
 import json
+import shutil
+from uuid import UUID
 from pathlib import Path
 from infrastructure.scrubber import scrub_text
 from pipelines.ingestor_pipeline import process_telemetry
 from infrastructure.debug_colors import debug_print
-from datetime import date
+from datetime import date, datetime
 
 # Core Paths
 LOG_DIR = Path(
@@ -15,6 +17,30 @@ STATE_FILE = Path(
     os.environ.get("AGENTS_DB_DIR", str(Path.home() / ".agents" / "db"))
 ).expanduser() / "ingestion_state.json"
 LINES_PER_CHUNK = 200
+BACKUP_DIR = STATE_FILE.parent / "backups"
+
+
+def backup_database() -> Path:
+    """Creates a snapshot containing only Chroma's persisted database data."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    backup_path = BACKUP_DIR / f"db_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    backup_path.mkdir()
+
+    database_path = STATE_FILE.parent / "chroma.sqlite3"
+    if database_path.exists():
+        shutil.copy2(database_path, backup_path / database_path.name)
+
+    for entry in STATE_FILE.parent.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            UUID(entry.name)
+        except ValueError:
+            continue
+        shutil.copytree(entry, backup_path / entry.name)
+
+    debug_print(f"[Wrapper] Database backup created at {backup_path}", "success")
+    return backup_path
 
 def load_state() -> dict:
     """Loads the ingestion tracker state."""
@@ -45,10 +71,19 @@ def process_log_file(date_str: str):
 
     state = load_state()
     log_key = f"{date_str}/activity.log"
-    
-    # Retrieve the last processed line (defaults to 0 for new files)
+
+    # Do not create a backup when this log has no unread lines.
     start_line = state.get(log_key, 0)
-    
+    if start_line >= total_lines:
+        debug_print(f"[Wrapper] Skipping already processed log: {log_key}", "info")
+        return
+
+    try:
+        backup_database()
+    except Exception as e:
+        debug_print(f"[Wrapper] Failed to back up database before {log_path}: {e}", "error")
+        return
+
     debug_print(f"[Wrapper] Starting ingestion for {log_key} at line {start_line} of {total_lines}", "info")
 
     try:
