@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 LOGS_DIR = Path(os.environ.get("AGENTS_LOG_ROOT", str(GLOBAL_ROOT / "logs"))).expanduser()
 DATA_DIR = Path(os.environ.get("AGENTS_LOG_DIR", str(LOGS_DIR / "moniter_data"))).expanduser()
 SOCKET_PATH = Path(os.environ.get("MACRO_SERVICE_SOCKET", str(Path(os.environ.get("TMPDIR", "/tmp")) / "agents-macro-synth.sock")))
+SCREEN_CONTEXTS_DIR = LOGS_DIR / "screen_contexts"
 
 SYNTHETIC_EVENT_TAG = 0x41474E54
 abort_event = threading.Event()

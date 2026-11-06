@@ -1,9 +1,14 @@
 """Resident macro service and Unix-socket trigger."""
 
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+import subprocess
+from datetime import datetime
+from macro_synth.context_capture import ScreenRecorder, build_prompt_context
+from .runtime import LOGS_DIR
 
 from AppKit import NSApplication, NSRunningApplication, NSWorkspace
 from PyObjCTools import AppHelper
@@ -33,20 +38,30 @@ def load_macro_instructions() -> str:
 
 
 def run_macro_once(hud: MacroHUD):
+    # Setup paths for Phase 5 Analysis
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    recordings_dir = LOGS_DIR / "macro_recordings"
+    video_path = recordings_dir / f"recording_{timestamp}.mp4"
+    prompt_path = recordings_dir / f"prompt_{timestamp}.txt"
+    xml_path = recordings_dir / f"output_{timestamp}.txt"
+    
+    recorder = ScreenRecorder()
+    full_prompt = ""
+    llm_xml = ""
+
+    # 0. Start recording screen the exact moment the trigger is acknowledged
+    recorder.start(video_path)
+
     try:
-        # Capture the active external app instantly before the HUD takes focus
         workspace = NSWorkspace.sharedWorkspace()
         target_app = workspace.frontmostApplication()
         current_pid = NSRunningApplication.currentApplication().processIdentifier()
         if target_app and target_app.processIdentifier() == current_pid:
             target_app = getattr(hud, "last_external_app", None)
 
-        # 1. Start capturing telemetry, DOM, clipboard, and screenshots in parallel
-        #    so the prompt window appears INSTANTANEOUSLY without waiting for capture
         with ThreadPoolExecutor(max_workers=1) as context_pool:
             context_future = context_pool.submit(build_prompt_context, target_app=target_app)
 
-            # 2. Show interactive prompt box in upper-right INSTANTANEOUSLY and wait for user input
             cancelled, user_message, extra_pages = hud.wait_for_user_prompt(target_app=target_app)
             if cancelled:
                 debug_print("[MacroSynth] Run cancelled by user from prompt box.", "warning")
@@ -55,29 +70,16 @@ def run_macro_once(hud: MacroHUD):
             hud.update(status_text="Finalizing context capture...")
             clipboard, recent_log, deep_dom, screenshots, labels = context_future.result()
 
-        # 3. Arm physical kill-switch now that user has submitted the prompt
         input_events.start_physical_kill_switch(hud)
 
-        # Combine default app screenshots with any manually added context screenshots
         all_screenshots = list(screenshots)
         extra_labels = []
         for desc, png_bytes in extra_pages:
             all_screenshots.append((f"User Added Context ({desc})", png_bytes))
             extra_labels.append(desc)
 
-        user_request_block = ""
-        if user_message:
-            scrubbed_msg = scrub_text(user_message)
-            user_request_block = f"<UserExplicitRequest>\n{scrubbed_msg}\n</UserExplicitRequest>\n\n"
-
-        extra_context_block = ""
-        if extra_labels:
-            extra_context_block = (
-                f"<UserAddedContextPages>\n"
-                f"The user explicitly added {len(extra_labels)} extra page screenshot(s) to context: "
-                f"{', '.join(extra_labels)}.\n"
-                f"</UserAddedContextPages>\n\n"
-            )
+        user_request_block = f"<UserExplicitRequest>\n{scrub_text(user_message)}\n</UserExplicitRequest>\n\n" if user_message else ""
+        extra_context_block = f"<UserAddedContextPages>\nExtra contexts: {', '.join(extra_labels)}.\n</UserAddedContextPages>\n\n" if extra_labels else ""
 
         instructions = load_macro_instructions()
         full_prompt = (
@@ -87,17 +89,11 @@ def run_macro_once(hud: MacroHUD):
             f"<ClipboardContent>\n{clipboard}\n</ClipboardContent>\n\n"
             f"<RecentActivityLog>\n{recent_log}\n</RecentActivityLog>\n\n"
             f"<DeepActiveDOM>\n{deep_dom}\n</DeepActiveDOM>\n\n"
-            f"<ApplicationScreenshots>\nDefault application screenshots attached for: {labels}.\n"
-            "Each image is labeled with its application or context description.\n</ApplicationScreenshots>\n\n"
+            f"<ApplicationScreenshots>\nDefault screenshots: {labels}.\n</ApplicationScreenshots>\n\n"
             "Synthesize the <MacroAnalysis> and the XML action sequence with per-step reasoning now."
         )
 
         hud.update(status_text="Parsing actions with Gemini...")
-        debug_print(
-            f"[MacroSynth] Submitting multimodal macro prompt "
-            f"(user_msg={bool(user_message)}, extra_pages={len(extra_pages)}).",
-            "debug",
-        )
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 send_prompt,
@@ -114,22 +110,36 @@ def run_macro_once(hud: MacroHUD):
             llm_xml, _, _ = future.result()
 
         commands = parse_llm_output(llm_xml)
-        debug_print(f"[MacroSynth] Parsed {len(commands)} XML command block(s).", "debug")
         if not commands:
             hud.update(status_text="No valid XML actions returned.")
             return
+            
         if execute_macro_commands(commands, hud):
             hud.update(status_text="Macro sequence completed!")
         else:
             hud.update(status_text="Macro sequence stopped before completion.")
+
     except Exception as exc:
         debug_print(f"[MacroSynth] Worker failed: {exc}", "error")
         hud.update(status_text=f"Error: {exc}")
     finally:
         input_events.stop_physical_kill_switch()
+        recorder.stop()
+        
         if not abort_event.is_set() and not getattr(hud, "prompt_cancelled", False):
             hud.hide_after_delay(2.5)
 
+        # Launch the analyzer independently so it doesn't block the resident service
+        if full_prompt and llm_xml:
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            prompt_path.write_text(full_prompt, encoding="utf-8")
+            xml_path.write_text(llm_xml, encoding="utf-8")
+            
+            # Fire and forget the analyzer subprocess
+            subprocess.Popen([
+                sys.executable, "-m", "macro_synth.macro_analyzer", 
+                str(prompt_path), str(xml_path), str(video_path)
+            ])
 
 class MacroService:
     def __init__(self, hud: MacroHUD):

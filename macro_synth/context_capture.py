@@ -4,6 +4,13 @@ import json
 import re
 from collections import deque
 from datetime import datetime
+import subprocess
+import signal
+from pathlib import Path
+from infrastructure.debugging import debug_print
+
+import io
+from PIL import Image, ImageDraw, ImageFont
 
 import ApplicationServices
 import objc
@@ -24,9 +31,76 @@ from .runtime import (
     DEEP_DOM_MAX_VALUE_LEN,
     MAX_APP_SCREENSHOTS,
     LOG_LINES_TO_SEND,
+    SCREEN_CONTEXTS_DIR,
 )
 
+def _save_screenshot_to_log(png_bytes: bytes, label: str) -> None:
+    """Saves the screenshot buffer to the screen_contexts log folder."""
+    try:
+        SCREEN_CONTEXTS_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
+        safe_label = re.sub(r"[^\w\-.]+", "_", label).strip("_") or "screen"
+        file_path = SCREEN_CONTEXTS_DIR / f"{timestamp}_{safe_label}.png"
+        file_path.write_bytes(png_bytes)
+        debug_print(f"[MacroSynth] Saved screenshot artifact to {file_path}", "debug")
+    except Exception as exc:
+        debug_print(f"[MacroSynth] Failed saving screenshot to {SCREEN_CONTEXTS_DIR}: {exc}", "warning")
 
+def _overlay_coordinate_grid(
+    png_bytes: bytes,
+    label: str = "screenshot",
+    target_width: int = 1680,
+    target_height: int = 1050,
+    step: int = 50,
+) -> bytes:
+    """
+    Normalizes the image to screen dimensions (1680x1050), overlays a 50px
+    coordinate grid, logs the result to disk, and returns the PNG bytes.
+    """
+    debug_print(f"[MacroSynth] Overlaying coordinate grid on screenshot for '{label}'...", "debug")
+    with Image.open(io.BytesIO(png_bytes)) as base_img:
+        img = base_img.convert("RGBA")
+        if img.size != (target_width, target_height):
+            img = img.resize((target_width, target_height), Image.Resampling.BILINEAR)
+
+        overlay = Image.new("RGBA", (target_width, target_height), (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        grid_color = (0, 200, 255, 60)
+        major_color = (255, 50, 50, 110)
+        text_color = (255, 255, 255, 200)
+        bg_chip_color = (0, 0, 0, 160)
+
+        font = ImageFont.load_default()
+
+        # Vertical grid lines
+        for x in range(0, target_width + 1, step):
+            col = major_color if (x % 200 == 0) else grid_color
+            draw.line([(x, 0), (x, target_height)], fill=col, width=1)
+
+        # Horizontal grid lines
+        for y in range(0, target_height + 1, step):
+            col = major_color if (y % 200 == 0) else grid_color
+            draw.line([(0, y), (target_width, y)], fill=col, width=1)
+
+        # Coordinate tags
+        for x in range(0, target_width + 1, step * 2):
+            for y in range(0, target_height + 1, step * 2):
+                coord_label = f"{x},{y}"
+                bbox = draw.textbbox((x + 2, y + 2), coord_label, font=font)
+                draw.rectangle([bbox[0] - 1, bbox[1] - 1, bbox[2] + 1, bbox[3] + 1], fill=bg_chip_color)
+                draw.text((x + 2, y + 2), coord_label, fill=text_color, font=font)
+
+        composited = Image.alpha_composite(img, overlay).convert("RGB")
+        out_buf = io.BytesIO()
+        composited.save(out_buf, format="PNG", optimize=True)
+        final_bytes = out_buf.getvalue()
+
+        debug_print(f"[MacroSynth] Finished overlaying grid on screenshot for '{label}'.", "debug")
+        # Save to /logs/screen_contexts/
+        _save_screenshot_to_log(final_bytes, label)
+
+        return final_bytes
 def _unpack_ax_value(ax_val):
     try:
         val_str = str(ax_val)
@@ -152,7 +226,8 @@ def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]
             bitmap = NSBitmapImageRep.alloc().initWithCGImage_(image)
             png_data = bitmap.representationUsingType_properties_(NSPNGFileType, None)
             if png_data:
-                screenshots.append((app_name, bytes(png_data)))
+                processed_bytes = _overlay_coordinate_grid(bytes(png_data))
+                screenshots.append((app_name, processed_bytes))
 
         debug_print(
             f"[MacroSynth] Captured {len(screenshots)}/{len(app_names)} requested application screenshot(s).",
@@ -212,8 +287,10 @@ def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> 
         png_data = bitmap.representationUsingType_properties_(NSPNGFileType, None)
         if not png_data:
             return None
-        debug_print(f"[MacroSynth] Added full-screen page context: '{desc}'", "info")
-        return (desc, bytes(png_data))
+        
+        processed_bytes = _overlay_coordinate_grid(bytes(png_data))
+        debug_print(f"[MacroSynth] Added full-screen page context with grid: '{desc}'", "info")
+        return (desc, processed_bytes)
 
 
 def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
@@ -250,3 +327,27 @@ def build_prompt_context(target_app=None) -> tuple[str, str, str, list[tuple[str
         "debug",
     )
     return scrubbed_clipboard, scrubbed_log, scrubbed_dom, screenshots, labels
+
+class ScreenRecorder:
+    def __init__(self):
+        self.process = None
+        self.filepath = None
+
+    def start(self, filepath: Path):
+        self.filepath = filepath
+        self.filepath.parent.mkdir(parents=True, exist_ok=True)
+        # screencapture -v records video to the given path until it receives SIGINT
+        self.process = subprocess.Popen(
+            ["screencapture", "-v", str(self.filepath)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        debug_print(f"[ScreenRecorder] Started recording to {self.filepath.name}", "system")
+
+    def stop(self):
+        if self.process:
+            self.process.send_signal(signal.SIGINT)
+            self.process.wait()
+            self.process = None
+            debug_print(f"[ScreenRecorder] Stopped recording.", "system")

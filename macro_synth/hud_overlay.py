@@ -409,7 +409,7 @@ class MacroHUD:
         self.user_request_text = str(self.input_field.stringValue() or "").strip()
         self.prompt_cancelled = False
         self._restore_execution_mode_on_main_thread()
-        self.status_text = "Parsing actions with Gemini..."
+        self.status_text = "Parsing actions..."
         self._refresh_display()
         self.prompt_event.set()
 
