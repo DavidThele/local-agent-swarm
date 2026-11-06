@@ -1,48 +1,91 @@
+import threading
+import time
 import objc
 from AppKit import (
     NSApplication,
+    NSApplicationActivateAllWindows,
+    NSApplicationActivateIgnoringOtherApps,
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
+    NSBezelStyleRounded,
     NSBezierPath,
+    NSButton,
     NSColor,
     NSFloatingWindowLevel,
     NSFont,
     NSMakeRect,
     NSPanel,
+    NSRunningApplication,
     NSScreen,
     NSScrollView,
     NSTextField,
     NSTextView,
     NSView,
+    NSWorkspace,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowStyleMaskBorderless,
-    NSWindowStyleMaskNonactivatingPanel,
 )
-from Foundation import NSObject, NSRunLoop, NSDate
+from Foundation import NSObject
 from PyObjCTools import AppHelper
 from infrastructure.debugging import debug_print
+from .context_capture import capture_screen_context_exclude_hud
+
+
+class InteractiveHUDPanel(NSPanel):
+    """
+    Borderless NSPanel that can accept key input and mouse clicks when focused
+    during the user prompt phase, and pass clicks through during execution.
+    """
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return True
 
 
 class RoundedHUDView(NSView):
     """Custom dark translucent background view with rounded corners and subtle border."""
 
+    def acceptsFirstMouse_(self, event):
+        return True
+
     def drawRect_(self, rect):
-        # Deep charcoal background with 92% opacity
-        bg_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.11, 0.14, 0.92)
+        bg_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.11, 0.14, 0.94)
         bg_color.setFill()
         path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 12.0, 12.0)
         path.fill()
 
-        # Subtle crisp border
         border_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(0.30, 0.33, 0.40, 0.70)
         border_color.setStroke()
         path.setLineWidth_(1.5)
         path.stroke()
 
 
+class _PromptFieldDelegate(NSObject):
+    """Intercepts Enter (Submit) and Escape (Cancel) inside the HUD prompt text field."""
+
+    def initWithHUD_(self, hud):
+        self = objc.super(_PromptFieldDelegate, self).init()
+        if self is None:
+            return None
+        self.hud = hud
+        return self
+
+    def control_textView_doCommandBySelector_(self, control, text_view, command_selector):
+        selector_str = str(command_selector)
+        if selector_str == "insertNewline:":
+            self.hud._handle_send_clicked()
+            return True
+        if selector_str == "cancelOperation:":
+            self.hud._handle_cancel_clicked()
+            return True
+        return False
+
+
 class _HUDDispatcher(NSObject):
-    """Helper NSObject to safely dispatch UI updates onto the main AppKit thread."""
+    """Helper NSObject to safely dispatch UI updates and button actions onto the main AppKit thread."""
 
     def initWithHUD_(self, hud):
         self = objc.super(_HUDDispatcher, self).init()
@@ -63,6 +106,17 @@ class _HUDDispatcher(NSObject):
     def showHUD_(self, _):
         self.hud._show_for_run_on_main_thread()
 
+    def beginPrompt_(self, _):
+        self.hud._begin_prompt_on_main_thread()
+
+    @objc.IBAction
+    def onAddContextClicked_(self, sender):
+        self.hud._handle_add_context_clicked()
+
+    @objc.IBAction
+    def onSendClicked_(self, sender):
+        self.hud._handle_send_clicked()
+
 
 class MacroHUD:
     def __init__(self, width: int = 420, height: int = 140, resident: bool = False):
@@ -74,34 +128,59 @@ class MacroHUD:
         self.scroll_view = None
         self.status_label = None
         self.body_text_view = None
+
+        # Interactive Prompt Phase Controls
+        self.prompt_container = None
+        self.input_field = None
+        self.send_button = None
+        self.add_context_button = None
+        self.context_list_scroll = None
+        self.context_list_view = None
+
         self.dispatcher = _HUDDispatcher.alloc().initWithHUD_(self)
+        self.field_delegate = _PromptFieldDelegate.alloc().initWithHUD_(self)
 
         self.status_text = "Initializing..."
-        self.actions = []       # List of dicts: {"label": str, "reasoning": str, "state": "pending"|"active"|"done"|"aborted"}
-        self.analysis = None    # Dict with EndGoal, CurrentState, GeneralSteps, DoD
+        self.actions = []
+        self.analysis = None
+
+        # Synchronization for Interactive Prompt Phase
+        self.prompt_event = threading.Event()
+        self.prompt_cancelled = False
+        self.user_request_text = ""
+        self.added_context_pages = []  # List of tuples: (description_str, png_bytes)
+        self.last_external_app = None
 
     def setup_window(self):
         """Must be called on the main thread before starting the worker thread."""
         app = NSApplication.sharedApplication()
-        # Accessory policy prevents a Dock icon or menu bar from stealing active window focus
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+        # Track whenever another application becomes active so we know which app to restore focus to
+        ws_nc = NSWorkspace.sharedWorkspace().notificationCenter()
+        ws_nc.addObserverForName_object_queue_usingBlock_(
+            "NSWorkspaceDidActivateApplicationNotification",
+            None,
+            None,
+            self._on_app_activated,
+        )
 
         screen_frame = NSScreen.mainScreen().visibleFrame()
         margin = 20.0
         x = screen_frame.origin.x + screen_frame.size.width - self.width - margin
         y = screen_frame.origin.y + screen_frame.size.height - self.height - margin
 
-        style_mask = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
-        self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        style_mask = NSWindowStyleMaskBorderless
+        self.panel = InteractiveHUDPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(x, y, self.width, self.height),
             style_mask,
             NSBackingStoreBuffered,
             False,
         )
 
-        # Float above all apps (including full-screen spaces) without activating or intercepting clicks
         self.panel.setLevel_(NSFloatingWindowLevel)
         self.panel.setFloatingPanel_(True)
+        self.panel.setBecomesKeyOnlyIfNeeded_(False)
         self.panel.setHidesOnDeactivate_(False)
         self.panel.setOpaque_(False)
         self.panel.setAlphaValue_(0.0 if self.resident else 1.0)
@@ -115,7 +194,7 @@ class MacroHUD:
         self.content_view = RoundedHUDView.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
         self.panel.setContentView_(self.content_view)
 
-        # Thinner Header Status Label
+        # Header Status Label
         self.status_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(12, self.height - 28, self.width - 24, 18)
         )
@@ -129,12 +208,12 @@ class MacroHUD:
         self.status_label.setStringValue_("⚡ Macro Synth: Initializing...")
         self.content_view.addSubview_(self.status_label)
 
-        # Scrollable Monospace Body Area for Actions + Separator + Macro Analysis
+        # Scrollable Monospace Body Area for Execution Mode
         self.scroll_view = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(12, 10, self.width - 24, self.height - 40)
         )
         self.scroll_view.setDrawsBackground_(False)
-        self.scroll_view.setHasVerticalScroller_(False)
+        self.scroll_view.setHasVerticalScroller_(False) 
         self.scroll_view.setHasHorizontalScroller_(False)
 
         self.body_text_view = NSTextView.alloc().initWithFrame_(
@@ -151,8 +230,215 @@ class MacroHUD:
         self.scroll_view.setDocumentView_(self.body_text_view)
         self.content_view.addSubview_(self.scroll_view)
 
+        # Build Interactive Prompt Container (Hidden during normal execution mode)
+        self._setup_prompt_views()
+
         self.panel.orderFrontRegardless()
         self._refresh_display()
+
+    def _on_app_activated(self, notification):
+        """Records the most recently focused external application."""
+        try:
+            app = notification.userInfo().objectForKey_("NSWorkspaceApplicationKey")
+            current_pid = NSRunningApplication.currentApplication().processIdentifier()
+            if app and app.processIdentifier() != current_pid:
+                self.last_external_app = app
+        except Exception:
+            pass
+
+    def _setup_prompt_views(self):
+        """Builds the input box, 'Add this page to context' button, and context list inside prompt_container."""
+        prompt_h = 168
+        self.prompt_container = NSView.alloc().initWithFrame_(NSMakeRect(12, 10, self.width - 24, prompt_h))
+        self.prompt_container.setHidden_(True)
+        inner_w = self.width - 24
+
+        # 1. Text Input Box + Send Button (top row of prompt container)
+        send_w = 58
+        self.input_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(0, prompt_h - 28, inner_w - send_w - 6, 24)
+        )
+        self.input_field.setPlaceholderString_("Optional request (Enter to send, Esc to cancel)...")
+        self.input_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        self.input_field.setBezeled_(True)
+        self.input_field.setDrawsBackground_(True)
+        self.input_field.setBackgroundColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.16, 0.18, 0.22, 1.0)
+        )
+        self.input_field.setTextColor_(NSColor.whiteColor())
+        self.input_field.setDelegate_(self.field_delegate)
+        self.prompt_container.addSubview_(self.input_field)
+
+        self.send_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(inner_w - send_w, prompt_h - 29, send_w, 26)
+        )
+        self.send_button.setTitle_("Send")
+        self.send_button.setBezelStyle_(NSBezelStyleRounded)
+        self.send_button.setTarget_(self.dispatcher)
+        self.send_button.setAction_("onSendClicked:")
+        self.prompt_container.addSubview_(self.send_button)
+
+        # 2. "Add this page to context" Button
+        self.add_context_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(0, prompt_h - 60, inner_w, 26)
+        )
+        self.add_context_button.setTitle_("+ Add this page to context")
+        self.add_context_button.setBezelStyle_(NSBezelStyleRounded)
+        self.add_context_button.setTarget_(self.dispatcher)
+        self.add_context_button.setAction_("onAddContextClicked:")
+        self.prompt_container.addSubview_(self.add_context_button)
+
+        # 3. Scrollable List of Added Context Pages
+        list_h = prompt_h - 68
+        self.context_list_scroll = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, inner_w, list_h)
+        )
+        self.context_list_scroll.setDrawsBackground_(False)
+        self.context_list_scroll.setHasVerticalScroller_(True)
+
+        self.context_list_view = NSTextView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, inner_w, list_h)
+        )
+        self.context_list_view.setEditable_(False)
+        self.context_list_view.setSelectable_(False)
+        self.context_list_view.setDrawsBackground_(False)
+        self.context_list_view.setTextColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.80, 0.84, 0.90, 1.0)
+        )
+        self.context_list_view.setFont_(NSFont.monospacedSystemFontOfSize_weight_(10.5, 0.0))
+        self.context_list_scroll.setDocumentView_(self.context_list_view)
+        self.prompt_container.addSubview_(self.context_list_scroll)
+
+        self.content_view.addSubview_(self.prompt_container)
+
+    def wait_for_user_prompt(self, target_app=None) -> tuple[bool, str, list[tuple[str, bytes]]]:
+        """
+        Blocks the background worker thread while showing the interactive prompt UI in the upper-right.
+        Returns (cancelled, user_message_str, extra_context_screenshots).
+        """
+        self.prompt_event.clear()
+        self.prompt_cancelled = False
+        self.user_request_text = ""
+        self.added_context_pages = []
+        if target_app:
+            self.last_external_app = target_app
+
+        self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_("beginPrompt:", None, True)
+        self.prompt_event.wait()
+
+        # Brief pause so macOS window focus finishes returning to the underlying app
+        if not self.prompt_cancelled:
+            time.sleep(0.12)
+
+        return self.prompt_cancelled, self.user_request_text, list(self.added_context_pages)
+
+    def _begin_prompt_on_main_thread(self):
+        # Record the currently active frontmost app right before focusing our HUD prompt
+        front_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        current_pid = NSRunningApplication.currentApplication().processIdentifier()
+        if front_app and front_app.processIdentifier() != current_pid:
+            self.last_external_app = front_app
+
+        self.status_text = "Specify Request"
+        self.status_label.setStringValue_(f"⚡ {self.status_text}")
+
+        # Resize HUD to fit the interactive prompt box cleanly anchored in the top-right corner
+        target_h = 214
+        self._resize_panel_top_right(target_h)
+
+        self.scroll_view.setHidden_(True)
+        self.prompt_container.setHidden_(False)
+        self.input_field.setStringValue_("")
+        self._refresh_context_list_text()
+
+        # Enable mouse interaction and focus the text field so user can type immediately
+        self.panel.setIgnoresMouseEvents_(False)
+        self.panel.setAlphaValue_(1.0)
+        self.panel.orderFrontRegardless()
+
+        curr_app = NSRunningApplication.currentApplication()
+        curr_app.activateWithOptions_(
+            NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows
+        )
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        self.panel.makeKeyAndOrderFront_(None)
+        self.panel.makeFirstResponder_(self.input_field)
+        self.input_field.selectText_(None)
+
+    def _refresh_context_list_text(self):
+        if not self.context_list_view:
+            return
+        if not self.added_context_pages:
+            self.context_list_view.setString_(
+                "Added context pages: (none)\n"
+            )
+        else:
+            lines = [f"Added context pages ({len(self.added_context_pages)}):"]
+            for i, (desc, _) in enumerate(self.added_context_pages, 1):
+                lines.append(f"  {i}. {desc}")
+            self.context_list_view.setString_("\n".join(lines))
+
+    def _handle_add_context_clicked(self):
+        win_num = self.panel.windowNumber() if self.panel else None
+        captured = capture_screen_context_exclude_hud(win_num)
+        if captured:
+            self.added_context_pages.append(captured)
+            self._refresh_context_list_text()
+            self.status_label.setStringValue_(f"⚡ Added: {captured[0]}")
+        # Keep the text input focused so hitting Enter right after still sends immediately
+        if self.panel and self.input_field:
+            self.panel.makeFirstResponder_(self.input_field)
+            self.input_field.selectText_(None)
+
+    def _restore_execution_mode_on_main_thread(self):
+        """Switches HUD back to click-through execution mode and restores focus to the user's app."""
+        self.prompt_container.setHidden_(True)
+        self.scroll_view.setHidden_(False)
+        if self.panel:
+            self.panel.setIgnoresMouseEvents_(True)
+            self.panel.resignKeyWindow()
+
+        # Reactivate the external application the user was interacting with
+        if self.last_external_app:
+            try:
+                self.last_external_app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+            except Exception:
+                pass
+
+    def _handle_send_clicked(self):
+        self.user_request_text = str(self.input_field.stringValue() or "").strip()
+        self.prompt_cancelled = False
+        self._restore_execution_mode_on_main_thread()
+        self.status_text = "Parsing actions with Gemini..."
+        self._refresh_display()
+        self.prompt_event.set()
+
+    def _handle_cancel_clicked(self):
+        self.prompt_cancelled = True
+        self._restore_execution_mode_on_main_thread()
+        if self.resident:
+            self._hide_on_main_thread()
+        else:
+            self._close_on_main_thread()
+        self.prompt_event.set()
+
+    def _resize_panel_top_right(self, new_height: int):
+        if not self.panel:
+            return
+        current_frame = self.panel.frame()
+        old_height = current_frame.size.height
+        old_y = current_frame.origin.y
+        x = current_frame.origin.x
+        w = current_frame.size.width
+        new_y = old_y + old_height - new_height
+
+        self.panel.setFrame_display_(NSMakeRect(x, new_y, w, new_height), True)
+        if self.content_view:
+            self.content_view.setFrame_(NSMakeRect(0, 0, w, new_height))
+        if self.status_label:
+            self.status_label.setFrame_(NSMakeRect(12, new_height - 24, w - 24, 18))
+        if self.prompt_container:
+            self.prompt_container.setFrame_(NSMakeRect(12, 10, w - 24, new_height - 38))
 
     def show_for_run(self):
         """Reset and show a reusable HUD for the next resident run."""
@@ -162,7 +448,12 @@ class MacroHUD:
         self.status_text = "Capturing DOM & recent telemetry..."
         self.actions = []
         self.analysis = None
+        if self.prompt_container:
+            self.prompt_container.setHidden_(True)
+        if self.scroll_view:
+            self.scroll_view.setHidden_(False)
         if self.panel:
+            self.panel.setIgnoresMouseEvents_(True)
             self.panel.setAlphaValue_(1.0)
             self.panel.orderFrontRegardless()
         if self.status_label:
@@ -189,9 +480,7 @@ class MacroHUD:
 
     def close_after_delay(self, seconds: float = 2.0):
         """Close one-shot HUDs or hide resident HUDs after a delay."""
-        import threading
         def _delayed():
-            import time
             time.sleep(seconds)
             if self.resident:
                 self.hide_instantly()
@@ -222,11 +511,10 @@ class MacroHUD:
         self.status_label.setStringValue_(f"⚡ {self.status_text}")
 
         lines = []
-        # 1. Actions List Section
         if not self.actions:
             lines.append("Waiting for action sequence...")
         else:
-            lines.append("ACTIONS & REASONING (Press ANY key to abort):")
+            lines.append("ACTIONS & REASONING (Press Esc/Fn to abort):")
             for idx, act in enumerate(self.actions, 1):
                 state = act.get("state", "pending")
                 icon = {
@@ -238,9 +526,7 @@ class MacroHUD:
                 lines.append(f"{icon} [{idx}] action: {act['label']}")
                 lines.append(f"       reasoning: {act['reasoning']}")
 
-        # 2. Separator Bar
         lines.append("\n" + "─" * 42 + "\n")
-        # 3. Macro Analysis Summary Section
         if self.analysis:
             lines.append("MACRO ANALYSIS SUMMARY:")
             lines.append(f"• End Goal:      {self.analysis.get('EndGoal', 'N/A')}")
@@ -254,38 +540,31 @@ class MacroHUD:
         debug_print(f"[HUD] Status: {self.status_text}\n{text_content}", "data")
         self.body_text_view.setString_(text_content)
 
-        # Dynamically measure exact text height required for current content
         layout_manager = self.body_text_view.layoutManager()
         text_container = self.body_text_view.textContainer()
         layout_manager.ensureLayoutForTextContainer_(text_container)
         used_rect = layout_manager.usedRectForTextContainer_(text_container)
         text_height = max(30, used_rect.size.height + 8)
 
-        # Compute new window height (Header ~26px + spacing + text_height + padding)
         header_height = 26
         spacing = 6
         padding_y = 20
         new_height = int(header_height + spacing + text_height + padding_y)
 
-        # Clamp height between 90px and 80% of screen height
         screen_frame = NSScreen.mainScreen().visibleFrame()
         max_height = int(screen_frame.size.height * 0.8)
         new_height = max(90, min(new_height, max_height))
 
-        # Update panel frame while keeping top-right corner anchored
         current_frame = self.panel.frame()
         old_height = current_frame.size.height
         old_y = current_frame.origin.y
         x = current_frame.origin.x
         w = current_frame.size.width
-
-        # Top edge remains constant: old_y + old_height = new_y + new_height
         new_y = old_y + old_height - new_height
 
         new_frame = NSMakeRect(x, new_y, w, new_height)
         self.panel.setFrame_display_(new_frame, True)
 
-        # Resize subviews to fit new bounds cleanly
         if self.content_view:
             self.content_view.setFrame_(NSMakeRect(0, 0, w, new_height))
         if self.status_label:
@@ -299,8 +578,10 @@ class MacroHUD:
         if self.panel:
             self.panel.close()
             self.panel = None
+        NSApplication.sharedApplication().stop_(None)
         AppHelper.stopEventLoop()
 
     def _hide_on_main_thread(self):
         if self.panel:
+            self.panel.setIgnoresMouseEvents_(True)
             self.panel.setAlphaValue_(0.0)

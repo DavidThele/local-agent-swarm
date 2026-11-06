@@ -5,11 +5,13 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from AppKit import NSApplication, NSRunningApplication, NSWorkspace
 from PyObjCTools import AppHelper
 
 from infrastructure.debugging import debug_print
 from infrastructure.parser import parse_llm_output
 from infrastructure.prompt_router import send_prompt
+from infrastructure.scrubber import scrub_text
 from .action_runner import execute_macro_commands
 from .context_capture import build_prompt_context
 from . import input_events
@@ -31,29 +33,78 @@ def load_macro_instructions() -> str:
 
 
 def run_macro_once(hud: MacroHUD):
-    input_events.start_physical_kill_switch(hud)
     try:
-        hud.update(status_text="Capturing DOM & recent telemetry...")
-        clipboard, recent_log, deep_dom, screenshots, labels = build_prompt_context()
+        # Capture the active external app instantly before the HUD takes focus
+        workspace = NSWorkspace.sharedWorkspace()
+        target_app = workspace.frontmostApplication()
+        current_pid = NSRunningApplication.currentApplication().processIdentifier()
+        if target_app and target_app.processIdentifier() == current_pid:
+            target_app = getattr(hud, "last_external_app", None)
+
+        # 1. Start capturing telemetry, DOM, clipboard, and screenshots in parallel
+        #    so the prompt window appears INSTANTANEOUSLY without waiting for capture
+        with ThreadPoolExecutor(max_workers=1) as context_pool:
+            context_future = context_pool.submit(build_prompt_context, target_app=target_app)
+
+            # 2. Show interactive prompt box in upper-right INSTANTANEOUSLY and wait for user input
+            cancelled, user_message, extra_pages = hud.wait_for_user_prompt(target_app=target_app)
+            if cancelled:
+                debug_print("[MacroSynth] Run cancelled by user from prompt box.", "warning")
+                return
+
+            hud.update(status_text="Finalizing context capture...")
+            clipboard, recent_log, deep_dom, screenshots, labels = context_future.result()
+
+        # 3. Arm physical kill-switch now that user has submitted the prompt
+        input_events.start_physical_kill_switch(hud)
+
+        # Combine default app screenshots with any manually added context screenshots
+        all_screenshots = list(screenshots)
+        extra_labels = []
+        for desc, png_bytes in extra_pages:
+            all_screenshots.append((f"User Added Context ({desc})", png_bytes))
+            extra_labels.append(desc)
+
+        user_request_block = ""
+        if user_message:
+            scrubbed_msg = scrub_text(user_message)
+            user_request_block = f"<UserExplicitRequest>\n{scrubbed_msg}\n</UserExplicitRequest>\n\n"
+
+        extra_context_block = ""
+        if extra_labels:
+            extra_context_block = (
+                f"<UserAddedContextPages>\n"
+                f"The user explicitly added {len(extra_labels)} extra page screenshot(s) to context: "
+                f"{', '.join(extra_labels)}.\n"
+                f"</UserAddedContextPages>\n\n"
+            )
+
         instructions = load_macro_instructions()
         full_prompt = (
             f"{instructions}\n\n"
+            f"{user_request_block}"
+            f"{extra_context_block}"
             f"<ClipboardContent>\n{clipboard}\n</ClipboardContent>\n\n"
             f"<RecentActivityLog>\n{recent_log}\n</RecentActivityLog>\n\n"
             f"<DeepActiveDOM>\n{deep_dom}\n</DeepActiveDOM>\n\n"
-            f"<ApplicationScreenshots>\nScreenshots are attached for: {labels}.\n"
-            "Each image is labeled with its application name.\n</ApplicationScreenshots>\n\n"
+            f"<ApplicationScreenshots>\nDefault application screenshots attached for: {labels}.\n"
+            "Each image is labeled with its application or context description.\n</ApplicationScreenshots>\n\n"
             "Synthesize the <MacroAnalysis> and the XML action sequence with per-step reasoning now."
         )
+
         hud.update(status_text="Parsing actions with Gemini...")
-        debug_print("[MacroSynth] Submitting multimodal macro prompt.", "debug")
+        debug_print(
+            f"[MacroSynth] Submitting multimodal macro prompt "
+            f"(user_msg={bool(user_message)}, extra_pages={len(extra_pages)}).",
+            "debug",
+        )
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 send_prompt,
                 prompt_text=full_prompt,
                 model=MODEL_TO_USE,
                 print_cost=True,
-                image_data=screenshots,
+                image_data=all_screenshots,
             )
             while not future.done():
                 if abort_event.is_set():
@@ -76,7 +127,7 @@ def run_macro_once(hud: MacroHUD):
         hud.update(status_text=f"Error: {exc}")
     finally:
         input_events.stop_physical_kill_switch()
-        if not abort_event.is_set():
+        if not abort_event.is_set() and not getattr(hud, "prompt_cancelled", False):
             hud.hide_after_delay(2.5)
 
 
@@ -116,7 +167,6 @@ class MacroService:
                         connection.sendall(b"busy\n")
                     else:
                         abort_event.clear()
-                        self.hud.show_for_run()
                         self.worker = threading.Thread(target=self._run, daemon=True)
                         self.worker.start()
                         connection.sendall(b"accepted\n")
@@ -143,7 +193,7 @@ def main():
     hud.setup_window()
     service = MacroService(hud)
     service.start()
-    AppHelper.runConsoleEventLoop()
+    NSApplication.sharedApplication().run()
 
 
 if __name__ == "__main__":

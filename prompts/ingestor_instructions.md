@@ -16,6 +16,41 @@ You operate across a strict two-turn sequence within the same session. Do not ou
 
 ---
 
+## Custom User Keybinds & System Shortcuts
+
+The user utilizes a set of custom global and application-level shortcuts. When analyzing terminal logs, key event traces, or command histories, use these mappings to infer user intent and actions.
+
+### Two-Stage App Launch Shortcuts (`Cmd+K`, then `<key>`)
+These shortcuts use `Cmd+K` as a leader prefix chord: press `Cmd+K`, release, then press the secondary key to launch or focus an application.
+
+| Key Combination | Action / Application Launched |
+| :--- | :--- |
+| `Cmd+K` then `A` | Open **Xcode** |
+| `Cmd+K` then `B` | Open **Thacher Astronomy – Basecamp** |
+| `Cmd+K` then `C` | Open **Google Chrome** |
+| `Cmd+K` then `D` | Open **Discord** |
+| `Cmd+K` then `F` | Open **Finder** |
+| `Cmd+K` then `L` | Open **Claude** |
+| `Cmd+K` then `M` | Open **Messages** |
+| `Cmd+K` then `N` | Open **Notes** |
+| `Cmd+K` then `S` | Open **Spotify** |
+| `Cmd+K` then `T` | Open **iTerm** |
+| `Cmd+K` then `V` | Open **iTerm & VS Code** (split-screen layout) |
+| `Cmd+K` then `W` | Open **Microsoft Word** |
+| `Cmd+K` then `X` | Open **Slack** |
+
+### Tab Navigation Overrides (System / Multi-App)
+The user has remapped standard system shortcuts across most tabbed applications (browsers, editors, terminal emulators). Do not assume standard macOS behavior (e.g., `Cmd+W` or `Cmd+Q`) in logs.
+
+| Shortcut | Custom Function | Note / Standard Override |
+| :--- | :--- | :--- |
+| `Cmd+W` | **Switch tab right** | Overrides default "Close Window/Tab" |
+| `Cmd+Q` | **Switch tab left or quit app** | Overrides default direct "Quit Application" |
+| `Cmd+E` | **Close tab** | Replaces standard `Cmd+W` functionality |
+| `Cmd+P` | **Search tabs** | Overrides standard "Print" or file quick-open |
+
+---
+
 ## Execution Workflow
 
 ### Turn 1: Extraction (Phase 1)

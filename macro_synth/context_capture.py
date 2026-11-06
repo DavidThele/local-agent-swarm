@@ -38,10 +38,10 @@ def _unpack_ax_value(ax_val):
     return None
 
 
-def get_deep_active_dom(max_depth: int = DEEP_DOM_MAX_DEPTH) -> dict:
+def get_deep_active_dom(target_app=None, max_depth: int = DEEP_DOM_MAX_DEPTH) -> dict:
     with objc.autorelease_pool():
         workspace = NSWorkspace.sharedWorkspace()
-        app = workspace.frontmostApplication()
+        app = target_app or workspace.frontmostApplication()
         if not app:
             return {"app": "Unknown", "tree": {}}
 
@@ -161,6 +161,61 @@ def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]
         return screenshots
 
 
+def get_frontmost_window_description() -> str:
+    """Returns a short description of the current frontmost app and window title (e.g., 'Google Chrome - Gmail')."""
+    with objc.autorelease_pool():
+        workspace = NSWorkspace.sharedWorkspace()
+        app = workspace.frontmostApplication()
+        if not app:
+            return "Screen Context"
+        app_name = str(app.localizedName() or "App")
+        pid = app.processIdentifier()
+        app_ref = ApplicationServices.AXUIElementCreateApplication(pid)
+        err, focused_win = ApplicationServices.AXUIElementCopyAttributeValue(app_ref, "AXFocusedWindow", None)
+        if err == 0 and focused_win:
+            err_t, title = ApplicationServices.AXUIElementCopyAttributeValue(focused_win, "AXTitle", None)
+            if err_t == 0 and title:
+                title_str = str(title).strip()
+                if title_str:
+                    if len(title_str) > 42:
+                        title_str = title_str[:39] + "..."
+                    return f"{app_name} - {title_str}"
+        return app_name
+
+
+def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> tuple[str, bytes] | None:
+    """
+    Captures a full-screen screenshot while excluding the HUD window itself,
+    and pairs it with a short window description (e.g., 'Google Chrome - Gmail').
+    """
+    with objc.autorelease_pool():
+        desc = get_frontmost_window_description()
+        if hud_window_number and hud_window_number > 0:
+            list_option = (
+                Quartz.kCGWindowListOptionOnScreenBelowWindow
+                | Quartz.kCGWindowListExcludeDesktopElements
+            )
+            window_id = int(hud_window_number)
+        else:
+            list_option = Quartz.kCGWindowListOptionOnScreenOnly
+            window_id = Quartz.kCGNullWindowID
+
+        image = Quartz.CGWindowListCreateImage(
+            Quartz.CGRectInfinite,
+            list_option,
+            window_id,
+            Quartz.kCGWindowImageDefault,
+        )
+        if image is None:
+            return None
+        bitmap = NSBitmapImageRep.alloc().initWithCGImage_(image)
+        png_data = bitmap.representationUsingType_properties_(NSPNGFileType, None)
+        if not png_data:
+            return None
+        debug_print(f"[MacroSynth] Added full-screen page context: '{desc}'", "info")
+        return (desc, bytes(png_data))
+
+
 def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     log_file = DATA_DIR / today_str / "activity.log"
@@ -174,7 +229,7 @@ def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
         return "".join(deque(log_file_handle, maxlen=n))
 
 
-def build_prompt_context() -> tuple[str, str, str, list[tuple[str, bytes]], str]:
+def build_prompt_context(target_app=None) -> tuple[str, str, str, list[tuple[str, bytes]], str]:
     raw_log_tail = get_last_n_log_lines()
     scrubbed_log = scrub_text(raw_log_tail)
     debug_print(
@@ -182,7 +237,7 @@ def build_prompt_context() -> tuple[str, str, str, list[tuple[str, bytes]], str]
         "debug",
     )
 
-    deep_dom = get_deep_active_dom()
+    deep_dom = get_deep_active_dom(target_app=target_app)
     scrubbed_dom = scrub_text(json.dumps(deep_dom, indent=2))
     scrubbed_clipboard = scrub_text(get_clipboard_text())
     recent_apps = get_recent_app_names(raw_log_tail)
