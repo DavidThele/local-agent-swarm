@@ -1,18 +1,15 @@
 import sys
 import time
 from pathlib import Path
-from google import genai
 from google.genai import types
 
 from infrastructure.debugging import debug_print
 from infrastructure.parser import parse_llm_output
+from infrastructure.prompt_router import send_prompt, GEMINI_3_8_FLASH
 from pipelines.performance_analyzer import snapshot_prompt_history
 
 GLOBAL_ROOT = Path.home() / ".agents"
 REPO_ROOT = Path(__file__).resolve().parents[1]
-
-# Using standard 2.5 Flash for the analyzer as it supports multimodal video robustly
-ANALYZER_MODEL = "gemini-2.5-flash"
 
 def load_macro_analyzer_prompt() -> str:
     global_path = GLOBAL_ROOT / "prompts" / "macro_analyzer_instructions.md"
@@ -22,6 +19,7 @@ def load_macro_analyzer_prompt() -> str:
     return repo_path.read_text(encoding="utf-8")
 
 def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path):
+    debug_print(f"[MacroAnalyzer] Starting analysis for prompt: {prompt_file.name}, xml: {xml_output_file.name}", "info")
     if not prompt_file.exists() or not xml_output_file.exists():
         debug_print("[MacroAnalyzer] Missing prompt or xml logs. Skipping analysis.", "warning")
         return
@@ -38,44 +36,32 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path):
         "If it succeeded, output nothing. If it failed, output <UpdateMacroInstructions>."
     )
 
-    client = genai.Client()
-    contents = []
-
-    # Upload video file to Gemini via File API
+    media_files = []
     uploaded_file = None
+    
     if video_file.exists() and video_file.stat().st_size > 100:
         debug_print(f"[MacroAnalyzer] Uploading screen recording {video_file.name} to Gemini...", "info")
         try:
-            uploaded_file = client.files.upload(file=str(video_file))
-            # Wait for processing to complete
-            while uploaded_file.state.name == "PROCESSING":
-                time.sleep(2)
-                uploaded_file = client.files.get(name=uploaded_file.name)
-            
-            if uploaded_file.state.name == "FAILED":
-                debug_print("[MacroAnalyzer] Video processing failed on Gemini side.", "error")
-            else:
-                contents.append(uploaded_file)
+            with open(video_file, "rb") as f:
+                video_bytes = f.read()
+
+            video_part = types.Part.from_bytes(
+                data=video_bytes,
+                mime_type="video/mp4"
+            )
+            media_files.append(video_part)
         except Exception as e:
             debug_print(f"[MacroAnalyzer] Failed to upload video: {e}", "error")
 
-    contents.append(types.Part.from_text(text=full_prompt))
-
     debug_print("[MacroAnalyzer] Analyzing macro execution...", "info")
-    response = client.models.generate_content(
-        model=ANALYZER_MODEL,
-        contents=[types.Content(role="user", parts=contents)],
-    )
-
-    result_text = response.text or ""
     
-    # Cleanup video file from Gemini storage
-    if uploaded_file:
-        try:
-            client.files.delete(name=uploaded_file.name)
-        except Exception:
-            pass
-
+    result_text, _, _ = send_prompt(
+        prompt_text=full_prompt,
+        model=GEMINI_3_8_FLASH,
+        media_files=media_files,
+        print_cost=True
+    )
+    
     if not result_text.strip():
         debug_print("[MacroAnalyzer] Analysis complete: Macro succeeded, no instructions updated.", "success")
         return
@@ -91,7 +77,6 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path):
                 summary = "Updated macro_instructions.md"
 
             if new_content:
-                # Update global and local instruction files
                 global_inst = GLOBAL_ROOT / "prompts" / "macro_instructions.md"
                 repo_inst = REPO_ROOT / "prompts" / "macro_instructions.md"
                 

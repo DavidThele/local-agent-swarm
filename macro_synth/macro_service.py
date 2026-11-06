@@ -38,7 +38,6 @@ def load_macro_instructions() -> str:
 
 
 def run_macro_once(hud: MacroHUD):
-    # Setup paths for Phase 5 Analysis
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     recordings_dir = LOGS_DIR / "macro_recordings"
     video_path = recordings_dir / f"recording_{timestamp}.mp4"
@@ -48,9 +47,6 @@ def run_macro_once(hud: MacroHUD):
     recorder = ScreenRecorder()
     full_prompt = ""
     llm_xml = ""
-
-    # 0. Start recording screen the exact moment the trigger is acknowledged
-    recorder.start(video_path)
 
     try:
         workspace = NSWorkspace.sharedWorkspace()
@@ -67,7 +63,7 @@ def run_macro_once(hud: MacroHUD):
                 debug_print("[MacroSynth] Run cancelled by user from prompt box.", "warning")
                 return
 
-            hud.update(status_text="Finalizing context capture...")
+            hud.update(status_text="Finalizing context capture...", wait=True)
             clipboard, recent_log, deep_dom, screenshots, labels = context_future.result()
 
         input_events.start_physical_kill_switch(hud)
@@ -93,7 +89,7 @@ def run_macro_once(hud: MacroHUD):
             "Synthesize the <MacroAnalysis> and the XML action sequence with per-step reasoning now."
         )
 
-        hud.update(status_text="Parsing actions with Gemini...")
+        hud.update(status_text="Parsing actions with Gemini...", wait=True)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 send_prompt,
@@ -111,17 +107,22 @@ def run_macro_once(hud: MacroHUD):
 
         commands = parse_llm_output(llm_xml)
         if not commands:
-            hud.update(status_text="No valid XML actions returned.")
+            hud.update(status_text="No valid XML actions returned.", wait=True)
             return
+
+        # Start recording right before action execution begins
+        recorder.start(video_path)
+        # Give screencapture 150ms to spin up its capture session
+        time.sleep(0.15)
             
         if execute_macro_commands(commands, hud):
-            hud.update(status_text="Macro sequence completed!")
+            hud.update(status_text="Macro sequence completed!", wait=True)
         else:
-            hud.update(status_text="Macro sequence stopped before completion.")
+            hud.update(status_text="Macro sequence stopped before completion.", wait=True)
 
     except Exception as exc:
         debug_print(f"[MacroSynth] Worker failed: {exc}", "error")
-        hud.update(status_text=f"Error: {exc}")
+        hud.update(status_text=f"Error: {exc}", wait=True)
     finally:
         input_events.stop_physical_kill_switch()
         recorder.stop()
@@ -135,12 +136,11 @@ def run_macro_once(hud: MacroHUD):
             prompt_path.write_text(full_prompt, encoding="utf-8")
             xml_path.write_text(llm_xml, encoding="utf-8")
             
-            # Fire and forget the analyzer subprocess
             subprocess.Popen([
                 sys.executable, "-m", "macro_synth.macro_analyzer", 
                 str(prompt_path), str(xml_path), str(video_path)
             ])
-
+            
 class MacroService:
     def __init__(self, hud: MacroHUD):
         self.hud = hud

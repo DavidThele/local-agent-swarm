@@ -23,7 +23,6 @@ from AppKit import (
     NSWorkspace,
 )
 
-from infrastructure.debugging import debug_print
 from infrastructure.scrubber import scrub_text
 from .runtime import (
     DATA_DIR,
@@ -49,19 +48,34 @@ def _save_screenshot_to_log(png_bytes: bytes, label: str) -> None:
 def _overlay_coordinate_grid(
     png_bytes: bytes,
     label: str = "screenshot",
-    target_width: int = 1680,
-    target_height: int = 1050,
+    offset_x: int = 0,
+    offset_y: int = 0,
+    app_width: int | None = None,
+    app_height: int | None = None,
     step: int = 50,
 ) -> bytes:
     """
-    Normalizes the image to screen dimensions (1680x1050), overlays a 50px
-    coordinate grid, logs the result to disk, and returns the PNG bytes.
+    Pastes the application screenshot onto a full-screen point canvas at its actual screen
+    coordinates, overlays a 50px grid, logs to disk, and returns the PNG bytes.
+    Handles Retina scaling seamlessly.
     """
+    main_rect = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+    target_width = int(main_rect.size.width)
+    target_height = int(main_rect.size.height)
+    
     debug_print(f"[MacroSynth] Overlaying coordinate grid on screenshot for '{label}'...", "debug")
     with Image.open(io.BytesIO(png_bytes)) as base_img:
         img = base_img.convert("RGBA")
-        if img.size != (target_width, target_height):
+        
+        # Fix Retina scaling: force the raw pixel image down to logical screen points
+        if app_width and app_height:
+            img = img.resize((app_width, app_height), Image.Resampling.BILINEAR)
+        else:
+            # For full-screen captures
             img = img.resize((target_width, target_height), Image.Resampling.BILINEAR)
+
+        canvas = Image.new("RGBA", (target_width, target_height), (20, 22, 28, 255))
+        canvas.paste(img, (offset_x, offset_y))
 
         overlay = Image.new("RGBA", (target_width, target_height), (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
@@ -70,7 +84,6 @@ def _overlay_coordinate_grid(
         major_color = (255, 50, 50, 110)
         text_color = (255, 255, 255, 200)
         bg_chip_color = (0, 0, 0, 160)
-
         font = ImageFont.load_default()
 
         # Vertical grid lines
@@ -91,16 +104,15 @@ def _overlay_coordinate_grid(
                 draw.rectangle([bbox[0] - 1, bbox[1] - 1, bbox[2] + 1, bbox[3] + 1], fill=bg_chip_color)
                 draw.text((x + 2, y + 2), coord_label, fill=text_color, font=font)
 
-        composited = Image.alpha_composite(img, overlay).convert("RGB")
+        composited = Image.alpha_composite(canvas, overlay).convert("RGB")
         out_buf = io.BytesIO()
         composited.save(out_buf, format="PNG", optimize=True)
         final_bytes = out_buf.getvalue()
 
         debug_print(f"[MacroSynth] Finished overlaying grid on screenshot for '{label}'.", "debug")
-        # Save to /logs/screen_contexts/
         _save_screenshot_to_log(final_bytes, label)
-
         return final_bytes
+
 def _unpack_ax_value(ax_val):
     try:
         val_str = str(ax_val)
@@ -110,7 +122,6 @@ def _unpack_ax_value(ax_val):
     except Exception:
         pass
     return None
-
 
 def get_deep_active_dom(target_app=None, max_depth: int = DEEP_DOM_MAX_DEPTH) -> dict:
     with objc.autorelease_pool():
@@ -126,11 +137,9 @@ def get_deep_active_dom(target_app=None, max_depth: int = DEEP_DOM_MAX_DEPTH) ->
         def traverse(element, depth):
             if depth > max_depth:
                 return "..."
-
             err, role = ApplicationServices.AXUIElementCopyAttributeValue(element, "AXRole", None)
             if role in ("AXMenuBar", "AXMenu", "AXMenuItem"):
                 return None
-
             node = {}
             if err == 0 and role:
                 node["role"] = str(role)
@@ -176,12 +185,10 @@ def get_deep_active_dom(target_app=None, max_depth: int = DEEP_DOM_MAX_DEPTH) ->
         tree = traverse(focused_win, 0) if err == 0 and focused_win else traverse(app_ref, 0)
         return {"active_app": app_name, "pid": pid, "window_tree": tree}
 
-
 def get_clipboard_text() -> str:
     with objc.autorelease_pool():
         content = NSPasteboard.generalPasteboard().stringForType_(NSStringPboardType)
         return str(content) if content else ""
-
 
 def get_recent_app_names(log_text: str) -> list[str]:
     app_names = []
@@ -192,7 +199,6 @@ def get_recent_app_names(log_text: str) -> list[str]:
     selected_apps = app_names[-MAX_APP_SCREENSHOTS:]
     debug_print(f"[MacroSynth] Selected {len(selected_apps)} recent application(s) for screenshot capture.", "debug")
     return selected_apps
-
 
 def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]:
     with objc.autorelease_pool():
@@ -215,18 +221,34 @@ def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]
                 candidates,
                 key=lambda item: item[Quartz.kCGWindowBounds]["Width"] * item[Quartz.kCGWindowBounds]["Height"],
             )
+            
+            # Extract absolute screen coordinates to offset the grid correctly
+            bounds = window.get(Quartz.kCGWindowBounds, {})
+            offset_x = int(bounds.get("X", 0))
+            offset_y = int(bounds.get("Y", 0))
+            app_w = int(bounds.get("Width", 0))
+            app_h = int(bounds.get("Height", 0))
+
+            # CRITICAL: Add kCGWindowImageBoundsIgnoreFraming to strip the invisible drop shadow
             image = Quartz.CGWindowListCreateImage(
                 Quartz.CGRectNull,
                 Quartz.kCGWindowListOptionIncludingWindow,
                 window[Quartz.kCGWindowNumber],
-                Quartz.kCGWindowImageDefault,
+                Quartz.kCGWindowImageBoundsIgnoreFraming,
             )
             if image is None:
                 continue
             bitmap = NSBitmapImageRep.alloc().initWithCGImage_(image)
             png_data = bitmap.representationUsingType_properties_(NSPNGFileType, None)
             if png_data:
-                processed_bytes = _overlay_coordinate_grid(bytes(png_data))
+                processed_bytes = _overlay_coordinate_grid(
+                    bytes(png_data), 
+                    label=app_name,
+                    offset_x=offset_x,
+                    offset_y=offset_y,
+                    app_width=app_w,
+                    app_height=app_h
+                )
                 screenshots.append((app_name, processed_bytes))
 
         debug_print(
@@ -235,9 +257,7 @@ def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]
         )
         return screenshots
 
-
 def get_frontmost_window_description() -> str:
-    """Returns a short description of the current frontmost app and window title (e.g., 'Google Chrome - Gmail')."""
     with objc.autorelease_pool():
         workspace = NSWorkspace.sharedWorkspace()
         app = workspace.frontmostApplication()
@@ -257,12 +277,7 @@ def get_frontmost_window_description() -> str:
                     return f"{app_name} - {title_str}"
         return app_name
 
-
 def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> tuple[str, bytes] | None:
-    """
-    Captures a full-screen screenshot while excluding the HUD window itself,
-    and pairs it with a short window description (e.g., 'Google Chrome - Gmail').
-    """
     with objc.autorelease_pool():
         desc = get_frontmost_window_description()
         if hud_window_number and hud_window_number > 0:
@@ -275,11 +290,12 @@ def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> 
             list_option = Quartz.kCGWindowListOptionOnScreenOnly
             window_id = Quartz.kCGNullWindowID
 
+        # Add kCGWindowImageBoundsIgnoreFraming here as well just to be safe
         image = Quartz.CGWindowListCreateImage(
             Quartz.CGRectInfinite,
             list_option,
             window_id,
-            Quartz.kCGWindowImageDefault,
+            Quartz.kCGWindowImageBoundsIgnoreFraming,
         )
         if image is None:
             return None
@@ -288,10 +304,10 @@ def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> 
         if not png_data:
             return None
         
-        processed_bytes = _overlay_coordinate_grid(bytes(png_data))
+        # Screen capture is full screen, so we don't supply app_width/app_height offsets
+        processed_bytes = _overlay_coordinate_grid(bytes(png_data), label=desc)
         debug_print(f"[MacroSynth] Added full-screen page context with grid: '{desc}'", "info")
         return (desc, processed_bytes)
-
 
 def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -304,7 +320,6 @@ def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
         return "[No activity.log found]"
     with log_file.open("r", encoding="utf-8", errors="ignore") as log_file_handle:
         return "".join(deque(log_file_handle, maxlen=n))
-
 
 def build_prompt_context(target_app=None) -> tuple[str, str, str, list[tuple[str, bytes]], str]:
     raw_log_tail = get_last_n_log_lines()
@@ -336,7 +351,6 @@ class ScreenRecorder:
     def start(self, filepath: Path):
         self.filepath = filepath
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
-        # screencapture -v records video to the given path until it receives SIGINT
         self.process = subprocess.Popen(
             ["screencapture", "-v", str(self.filepath)],
             stdin=subprocess.DEVNULL,

@@ -461,7 +461,7 @@ class MacroHUD:
         if self.body_text_view:
             self.body_text_view.setString_("Preparing macro context...")
 
-    def update(self, status_text: str | None = None, actions: list | None = None, analysis: dict | None = None):
+    def update(self, status_text: str | None = None, actions: list | None = None, analysis: dict | None = None, wait: bool = False):
         """Thread-safe method called from background worker thread to update the HUD."""
         payload = {
             "status_text": status_text,
@@ -469,9 +469,9 @@ class MacroHUD:
             "analysis": analysis,
         }
         self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "applyState:", payload, False
+            "applyState:", payload, wait
         )
-
+        
     def dismiss_instantly(self):
         """Immediately closes the window and terminates the run loop without waiting."""
         self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_(

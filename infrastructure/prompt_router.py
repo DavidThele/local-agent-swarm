@@ -1,12 +1,11 @@
 import sys
 import time
-from google import genai # type: ignore
+from google import genai
 from google.genai.errors import APIError
 from google.genai.types import HttpOptions
 from google.genai import types
 from infrastructure.debugging import debug_print
 
-# Cleaned up model strings (stripped accidental leading spaces)
 GEMINI_4_ARGON = "gemini-4-argon"
 GEMINI_3_1_PRO = "gemini-3.1-pro-preview"
 GEMINI_3_8_FLASH = "gemini-3.8-flash"
@@ -17,34 +16,12 @@ discount = 0.5
 discounted_models = [GEMINI_3_8_FLASH, GEMINI_4_ARGON]
 
 pricing = {
-    GEMINI_4_ARGON: {
-        "input": 4,
-        "output": 20,
-        "thinking": 20,
-    },
-    GEMINI_3_1_PRO: {
-        "input": 2.00,
-        "output": 4.00,
-        "thinking": 4.00,
-    },
-    GEMINI_3_8_FLASH: {
-        "input": 1.50,
-        "output": 7.50,
-        "thinking": 7.50,
-    },
-    GEMINI_3_5_FLASH_LITE: {
-        "input": 0.30,
-        "output": 2.50,
-        "thinking": 2.50,
-    },
-    GEMINI_3_1_FLASH_LITE: {
-        "input": 0.25,
-        "output": 1.50,
-        "thinking": 1.50,
-    },
+    GEMINI_4_ARGON: {"input": 4, "output": 20, "thinking": 20},
+    GEMINI_3_1_PRO: {"input": 2.00, "output": 4.00, "thinking": 4.00},
+    GEMINI_3_8_FLASH: {"input": 1.50, "output": 7.50, "thinking": 7.50},
+    GEMINI_3_5_FLASH_LITE: {"input": 0.30, "output": 2.50, "thinking": 2.50},
+    GEMINI_3_1_FLASH_LITE: {"input": 0.25, "output": 1.50, "thinking": 1.50},
 }
-
-
 
 def send_prompt(
     prompt_text,
@@ -52,12 +29,21 @@ def send_prompt(
     chat_history=None,
     print_cost=True,
     image_data=None,
+    media_files=None,
 ):
     if chat_history is None:
         chat_history = []
 
     client = genai.Client(http_options=HttpOptions(api_version="v1"))
-    prompt_parts = [types.Part(text=prompt_text)]
+    prompt_parts = []
+    
+    # Allow passing pre-uploaded files (like the screen recording video)
+    if media_files:
+        for mf in media_files:
+            prompt_parts.append(mf)
+            
+    prompt_parts.append(types.Part(text=prompt_text))
+    
     if isinstance(image_data, list):
         for label, image_bytes in image_data:
             prompt_parts.append(types.Part(text=f"Screenshot of {label}:"))
@@ -84,7 +70,6 @@ def send_prompt(
             else:
                 raise e
     else:
-        # Final attempt after the 30s sleep
         try:
             response = client.models.generate_content(
                 model=model,
@@ -97,14 +82,13 @@ def send_prompt(
             raise e
 
     usage = response.usage_metadata
-
     input_tokens = usage.prompt_token_count or 0
     output_tokens = usage.candidates_token_count or 0
     thinking_tokens = getattr(usage, "thoughts_token_count", 0) or 0
 
-    input_cost = input_tokens / 1e6 * pricing[model]['input']
-    output_cost = output_tokens / 1e6 * pricing[model]['output']
-    thinking_cost = thinking_tokens / 1e6 * pricing[model]['thinking']
+    input_cost = input_tokens / 1e6 * pricing.get(model, pricing[model])['input']
+    output_cost = output_tokens / 1e6 * pricing.get(model, pricing[model])['output']
+    thinking_cost = thinking_tokens / 1e6 * pricing.get(model, pricing[model])['thinking']
     total_cost = input_cost + output_cost + thinking_cost
 
     if model in discounted_models:
@@ -122,18 +106,9 @@ def send_prompt(
 
     if print_cost:
         debug_print(f"[Router] Model: {model}", "debug")
-        debug_print(f"[Router] Input tokens: {input_tokens}", "debug")
-        debug_print(f"[Router] Output tokens: {output_tokens}", "debug")
-        debug_print(f"[Router] Thinking tokens: {thinking_tokens}", "debug")
-        debug_print(f"[Router] Total tokens: {input_tokens + output_tokens + thinking_tokens}", "debug")
-        debug_print(f"[Router] Input cost: ${input_cost:.6f}", "debug")
-        debug_print(f"[Router] Output cost: ${output_cost:.6f}", "debug")
-        debug_print(f"[Router] Thinking cost: ${thinking_cost:.6f}", "debug")
         debug_print(f"[Router] Total cost: ${total_cost:.6f}", "debug")
         if total_cost > 0.05:
             debug_print(f"[Router] Cost warning: ${total_cost:.6f} exceeds $0.05 threshold.", "error")
-        elif total_cost > 0.01:
-            debug_print(f"[Router] Cost notice: ${total_cost:.6f} exceeds $0.01 threshold.", "warning")
 
     chat_history.append(
         types.Content(
