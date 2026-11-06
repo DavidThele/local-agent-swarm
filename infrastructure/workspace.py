@@ -1,6 +1,6 @@
 import uuid
 from pathlib import Path
-from infrastructure.debug_colors import debug_print
+from infrastructure.debugging import debug_print
 
 def resolve_workspace_path(path: str, workspace_root: str | Path | None = None) -> tuple[Path, Path]:
     root = Path(workspace_root or Path.cwd()).expanduser().resolve()

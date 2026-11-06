@@ -53,6 +53,26 @@ python3 -m pipelines.log_ingestor_wrapper
 The ingestion wrapper skips the current date and processes prior
 `YYYY-MM-DD/activity.log` directories in chunks.
 
+## Resident Macro Service
+
+The macro synthesizer runs as a resident macOS LaunchAgent so PyObjC, Quartz,
+the prompt router, and the HUD are loaded once. The installed service listens
+on a per-user Unix socket. Trigger a run with:
+
+```bash
+python3 -m macro_synth.macro_trigger
+```
+
+The compatibility command also triggers the resident service:
+
+```bash
+python3 macro_synth/macro_executor.py
+```
+
+The LaunchAgent definition is kept at
+`launchd/com.davidthele.agents.macro-synth.plist`. The telemetry monitor is a
+separate process and continues writing `moniter_data` independently.
+
 ## Configuration
 
 Shell command whitelist and blacklist files are read from `~/.agents/config`

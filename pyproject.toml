@@ -20,6 +20,7 @@ include = [
 	"commands*",
 	"prompts*",
 	"config*",
+	"macro_synth*",
 ]
 
 [tool.setuptools.package-data]

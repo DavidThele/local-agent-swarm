@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from infrastructure.prompt_router import send_prompt, GEMINI_3_8_FLASH
 from infrastructure.parser import parse_llm_output
-from infrastructure.debug_colors import debug_print
+from infrastructure.debugging import debug_print
 
 GLOBAL_ROOT = Path.home() / ".agents"
 REPO_ROOT = Path(__file__).resolve().parents[1]

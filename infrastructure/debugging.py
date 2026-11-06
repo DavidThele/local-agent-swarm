@@ -1,6 +1,9 @@
 """Shared terminal colors for diagnostic output."""
 
 import re
+import threading
+import os
+from pathlib import Path
 
 COLORS = {
     "info": "\033[36m",       # Cyan: normal progress and informational messages
@@ -14,6 +17,11 @@ COLORS = {
 }
 
 _LABEL_PATTERN = re.compile(r"(?P<leading>\s*)(?P<label>\[[^\]\n]+\])(?P<message>.*)", re.DOTALL)
+LOGS_DIR = Path(
+    os.environ.get("AGENTS_LOG_ROOT", str(Path(__file__).resolve().parents[1] / "logs"))
+).expanduser()
+DEBUG_LOG_PATH = LOGS_DIR / "debug_log.log"
+_DEBUG_LOG_LOCK = threading.Lock()
 
 
 def debug_print(message: object, color: str = "info") -> None:
@@ -28,5 +36,13 @@ def debug_print(message: object, color: str = "info") -> None:
         output = f"{match.group('leading')}{colored_label}{match.group('message')}"
     else:
         output = f"{color_code}[Debug: {color}]{COLORS['reset']}{text}"
+
+    with _DEBUG_LOG_LOCK:
+        try:
+            DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with DEBUG_LOG_PATH.open("a", encoding="utf-8") as log_file:
+                log_file.write(output + "\n")
+        except OSError:
+            pass
 
     print(output)

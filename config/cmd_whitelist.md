@@ -14,3 +14,4 @@ wc
 stat
 diff
 less
+open

@@ -4,7 +4,7 @@ from google import genai # type: ignore
 from google.genai.errors import APIError
 from google.genai.types import HttpOptions
 from google.genai import types
-from infrastructure.debug_colors import debug_print
+from infrastructure.debugging import debug_print
 
 # Cleaned up model strings (stripped accidental leading spaces)
 GEMINI_4_ARGON = "gemini-4-argon"
@@ -12,7 +12,6 @@ GEMINI_3_1_PRO = "gemini-3.1-pro-preview"
 GEMINI_3_8_FLASH = "gemini-3.8-flash"
 GEMINI_3_5_FLASH_LITE = "gemini-3.5-flash-lite"
 GEMINI_3_1_FLASH_LITE = "gemini-3.1-flash-lite"
-GEMINI_2_5_FLASH_LITE = "gemini-2.5-flash-lite"
 
 discount = 0.5
 discounted_models = [GEMINI_3_8_FLASH, GEMINI_4_ARGON]
@@ -43,25 +42,30 @@ pricing = {
         "output": 1.50,
         "thinking": 1.50,
     },
-    GEMINI_2_5_FLASH_LITE: {
-        "input": 0.10,
-        "output": 0.40,
-        "thinking": 0.40,
-    },
 }
 
 
-def send_prompt(prompt_text, model=GEMINI_2_5_FLASH_LITE, chat_history=None, print_cost=True):
+
+def send_prompt(
+    prompt_text,
+    model=GEMINI_3_1_FLASH_LITE,
+    chat_history=None,
+    print_cost=True,
+    image_data=None,
+):
     if chat_history is None:
         chat_history = []
 
     client = genai.Client(http_options=HttpOptions(api_version="v1"))
-    chat_history.append(
-        types.Content(
-            role="user",
-            parts=[types.Part(text=prompt_text)],
-        )
-    )
+    prompt_parts = [types.Part(text=prompt_text)]
+    if isinstance(image_data, list):
+        for label, image_bytes in image_data:
+            prompt_parts.append(types.Part(text=f"Screenshot of {label}:"))
+            prompt_parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/png"))
+    elif image_data:
+        prompt_parts.append(types.Part.from_bytes(data=image_data, mime_type="image/png"))
+
+    chat_history.append(types.Content(role="user", parts=prompt_parts))
 
     delays = [10, 20, 30]
     response = None

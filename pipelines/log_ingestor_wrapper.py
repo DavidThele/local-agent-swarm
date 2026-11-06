@@ -6,12 +6,12 @@ from uuid import UUID
 from pathlib import Path
 from infrastructure.scrubber import scrub_text
 from pipelines.ingestor_pipeline import process_telemetry
-from infrastructure.debug_colors import debug_print
+from infrastructure.debugging import debug_print
 from datetime import date, datetime
 
 # Core Paths
 LOG_DIR = Path(
-    os.environ.get("AGENTS_LOG_DIR", str(Path.cwd() / "moniter_data"))
+    os.environ.get("AGENTS_LOG_DIR", str(Path.home() / ".agents" / "logs" / "moniter_data"))
 ).expanduser()
 STATE_FILE = Path(
     os.environ.get("AGENTS_DB_DIR", str(Path.home() / ".agents" / "db"))

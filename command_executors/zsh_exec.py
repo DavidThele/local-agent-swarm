@@ -1,7 +1,7 @@
 import shlex
 import subprocess
 from pathlib import Path
-from infrastructure.debug_colors import debug_print
+from infrastructure.debugging import debug_print
 from infrastructure.concurrency import TERMINAL_LOCK
 
 # Hardcoded baseline shell injection vectors (newlines, carriage returns, subshells)
@@ -39,7 +39,7 @@ def resolve_security_file(filename: str) -> Path:
         return global_path
     return Path(__file__).resolve().parents[1] / "config" / filename
 
-def execute(attributes: dict, content: dict, context_state: dict) -> str:
+def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
     if isinstance(content, dict):
         cmd_string = content.get("Command", "").strip()
     else:
@@ -99,6 +99,8 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         stderr = result.stderr.strip()
 
         output = []
+        if result.returncode != 0:
+            output.append(f"[Error] Command exited with status {result.returncode}.")
         if stdout:
             output.append(f"STDOUT:\n{stdout}")
         if stderr:

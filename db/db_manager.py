@@ -3,7 +3,7 @@ import chromadb
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any
-from infrastructure.debug_colors import debug_print
+from infrastructure.debugging import debug_print
 
 def get_db_path(global_dir: str = "~/.agents") -> Path:
     if global_dir == "~/.agents" and os.environ.get("AGENTS_DB_DIR"):
