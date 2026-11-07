@@ -40,9 +40,9 @@ def load_macro_instructions() -> str:
 def run_macro_once(hud: MacroHUD):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     recordings_dir = LOGS_DIR / "macro_recordings"
-    video_path = recordings_dir / f"recording_{timestamp}.mp4"
-    prompt_path = recordings_dir / f"prompt_{timestamp}.txt"
-    xml_path = recordings_dir / f"output_{timestamp}.txt"
+    video_path = recordings_dir / "recordings" / f"recording_{timestamp}.mp4"
+    prompt_path = recordings_dir / "prompts" / f"prompt_{timestamp}.txt"
+    xml_path = recordings_dir / "outputs" / f"output_{timestamp}.txt"
     
     recorder = ScreenRecorder()
     full_prompt = ""
@@ -132,7 +132,9 @@ def run_macro_once(hud: MacroHUD):
 
         # Launch the analyzer independently so it doesn't block the resident service
         if full_prompt and llm_xml:
-            recordings_dir.mkdir(parents=True, exist_ok=True)
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            xml_path.parent.mkdir(parents=True, exist_ok=True)
+            video_path.parent.mkdir(parents=True, exist_ok=True)
             prompt_path.write_text(full_prompt, encoding="utf-8")
             xml_path.write_text(llm_xml, encoding="utf-8")
             

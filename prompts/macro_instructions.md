@@ -135,7 +135,7 @@ Moves the mouse to `(x, y)` screen coordinates and clicks.
 - `button` (optional): `"left"` or `"right"`. Defaults to `"left"`.
 - `count` (optional): `1` for single click, `2` for double click. Defaults to `1`.
 - `reasoning` (required): Why this coordinate is being clicked.
-*Constraint:* Use ONLY when keyboard navigation cannot accomplish the task. Calculate coordinates using the `pos: [x, y]` and `size: [w, h]` from `<DeepActiveDOM>`.
+*Constraint:* Use ONLY when keyboard navigation cannot accomplish the task. Calculate coordinates by looking at the attached screenshot for a grid of coordinates.
 
 ```xml
 <MouseClick x="1120" y="340" button="left" count="1" reasoning="Focus the target input cell in the Chrome tab" />
@@ -146,11 +146,4 @@ Scrolls at the current mouse position (or optionally moves to `x`, `y` first).
 
 ```xml
 <Scroll dx="0" dy="-5" reasoning="Scroll down to reveal the next rows in the table" />
-```
-
-### 7. `<Wait>`
-Pauses execution for `ms` milliseconds. Insert a short wait after a focus-changing operation or a click when the next action depends on the target receiving focus.
-
-```xml
-<Wait ms="50" reasoning="Allow the newly focused target to settle before the next keyboard action" />
 ```

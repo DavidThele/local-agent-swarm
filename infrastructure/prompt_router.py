@@ -58,6 +58,7 @@ def send_prompt(
 
     for attempt, delay in enumerate(delays, start=1):
         try:
+            print(f"DEBUG: Calling generate_content with model = {repr(model)}")
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
@@ -71,6 +72,7 @@ def send_prompt(
                 raise e
     else:
         try:
+            print(f"DEBUG: Calling generate_content with model = {repr(model)}")
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
@@ -86,9 +88,14 @@ def send_prompt(
     output_tokens = usage.candidates_token_count or 0
     thinking_tokens = getattr(usage, "thoughts_token_count", 0) or 0
 
-    input_cost = input_tokens / 1e6 * pricing.get(model, pricing[model])['input']
-    output_cost = output_tokens / 1e6 * pricing.get(model, pricing[model])['output']
-    thinking_cost = thinking_tokens / 1e6 * pricing.get(model, pricing[model])['thinking']
+
+    input_tokens = usage.prompt_token_count or 0
+    output_tokens = usage.candidates_token_count or 0
+    thinking_tokens = getattr(usage, "thoughts_token_count", 0) or 0
+
+    input_cost = input_tokens / 1e6 * pricing[model]['input']
+    output_cost = output_tokens / 1e6 * pricing[model]['output']
+    thinking_cost = thinking_tokens / 1e6 * pricing[model]['thinking']
     total_cost = input_cost + output_cost + thinking_cost
 
     if model in discounted_models:
@@ -106,9 +113,18 @@ def send_prompt(
 
     if print_cost:
         debug_print(f"[Router] Model: {model}", "debug")
+        debug_print(f"[Router] Input tokens: {input_tokens}", "debug")
+        debug_print(f"[Router] Output tokens: {output_tokens}", "debug")
+        debug_print(f"[Router] Thinking tokens: {thinking_tokens}", "debug")
+        debug_print(f"[Router] Total tokens: {input_tokens + output_tokens + thinking_tokens}", "debug")
+        debug_print(f"[Router] Input cost: ${input_cost:.6f}", "debug")
+        debug_print(f"[Router] Output cost: ${output_cost:.6f}", "debug")
+        debug_print(f"[Router] Thinking cost: ${thinking_cost:.6f}", "debug")
         debug_print(f"[Router] Total cost: ${total_cost:.6f}", "debug")
         if total_cost > 0.05:
             debug_print(f"[Router] Cost warning: ${total_cost:.6f} exceeds $0.05 threshold.", "error")
+        elif total_cost > 0.01:
+            debug_print(f"[Router] Cost notice: ${total_cost:.6f} exceeds $0.01 threshold.", "warning")
 
     chat_history.append(
         types.Content(
@@ -116,4 +132,10 @@ def send_prompt(
             parts=[types.Part.from_text(text=response.text)],
         )
     )
-    return response.text, chat_history, cost
+
+    if response.text is None:
+        debug_print("[Router] Warning: Received empty response from model.", "warning")
+        response_text = ""
+    else:   
+        response_text = response.text
+    return response_text, chat_history, cost
