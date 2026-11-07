@@ -18,7 +18,6 @@ from infrastructure.parser import parse_llm_output
 from infrastructure.prompt_router import send_prompt
 from infrastructure.scrubber import scrub_text
 from .action_runner import execute_macro_commands
-from .context_capture import build_prompt_context
 from . import input_events
 from .hud_overlay import MacroHUD
 from .runtime import (
@@ -43,10 +42,12 @@ def run_macro_once(hud: MacroHUD):
     video_path = recordings_dir / "recordings" / f"recording_{timestamp}.mp4"
     prompt_path = recordings_dir / "prompts" / f"prompt_{timestamp}.txt"
     xml_path = recordings_dir / "outputs" / f"output_{timestamp}.txt"
+    feedback_path = recordings_dir / "outputs" / f"feedback_{timestamp}.txt"
     
     recorder = ScreenRecorder()
     full_prompt = ""
     llm_xml = ""
+    feedback_text = ""
 
     try:
         workspace = NSWorkspace.sharedWorkspace()
@@ -112,13 +113,21 @@ def run_macro_once(hud: MacroHUD):
 
         # Start recording right before action execution begins
         recorder.start(video_path)
-        # Give screencapture 150ms to spin up its capture session
         time.sleep(0.15)
             
-        if execute_macro_commands(commands, hud):
+        executed_successfully = execute_macro_commands(commands, hud)
+        if executed_successfully:
             hud.update(status_text="Macro sequence completed!", wait=True)
         else:
             hud.update(status_text="Macro sequence stopped before completion.", wait=True)
+
+        # Stop execution kill switch and screen recording before asking for feedback
+        input_events.stop_physical_kill_switch()
+        recorder.stop()
+
+        # Switch HUD to feedback input if not aborted
+        if not abort_event.is_set():
+            feedback_text = hud.wait_for_feedback()
 
     except Exception as exc:
         debug_print(f"[MacroSynth] Worker failed: {exc}", "error")
@@ -128,7 +137,7 @@ def run_macro_once(hud: MacroHUD):
         recorder.stop()
         
         if not abort_event.is_set() and not getattr(hud, "prompt_cancelled", False):
-            hud.hide_after_delay(2.5)
+            hud.hide_after_delay(1.5)
 
         # Launch the analyzer independently so it doesn't block the resident service
         if full_prompt and llm_xml:
@@ -138,10 +147,16 @@ def run_macro_once(hud: MacroHUD):
             prompt_path.write_text(full_prompt, encoding="utf-8")
             xml_path.write_text(llm_xml, encoding="utf-8")
             
-            subprocess.Popen([
+            cmd = [
                 sys.executable, "-m", "macro_synth.macro_analyzer", 
                 str(prompt_path), str(xml_path), str(video_path)
-            ])
+            ]
+            if feedback_text:
+                feedback_path.parent.mkdir(parents=True, exist_ok=True)
+                feedback_path.write_text(feedback_text, encoding="utf-8")
+                cmd.extend(["--feedback", str(feedback_path)])
+
+            subprocess.Popen(cmd)
             
 class MacroService:
     def __init__(self, hud: MacroHUD):

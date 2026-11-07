@@ -11,6 +11,7 @@ from AppKit import (
     NSBezierPath,
     NSButton,
     NSColor,
+    NSEvent,
     NSFloatingWindowLevel,
     NSFont,
     NSMakeRect,
@@ -27,6 +28,7 @@ from AppKit import (
     NSWindowStyleMaskBorderless,
 )
 from Foundation import NSObject
+import Quartz
 from PyObjCTools import AppHelper
 from infrastructure.debugging import debug_print
 from .context_capture import capture_screen_context_exclude_hud
@@ -35,7 +37,7 @@ from .context_capture import capture_screen_context_exclude_hud
 class InteractiveHUDPanel(NSPanel):
     """
     Borderless NSPanel that can accept key input and mouse clicks when focused
-    during the user prompt phase, and pass clicks through during execution.
+    during the user prompt/feedback phase, and pass clicks through during execution.
     """
 
     def canBecomeKeyWindow(self):
@@ -84,6 +86,27 @@ class _PromptFieldDelegate(NSObject):
         return False
 
 
+class _FeedbackFieldDelegate(NSObject):
+    """Intercepts Enter (Submit) and Escape (Instant Send) inside the feedback text field."""
+
+    def initWithHUD_(self, hud):
+        self = objc.super(_FeedbackFieldDelegate, self).init()
+        if self is None:
+            return None
+        self.hud = hud
+        return self
+
+    def control_textView_doCommandBySelector_(self, control, text_view, command_selector):
+        selector_str = str(command_selector)
+        if selector_str == "insertNewline:":
+            self.hud._handle_feedback_submit()
+            return True
+        if selector_str == "cancelOperation:":
+            self.hud._handle_feedback_submit()
+            return True
+        return False
+
+
 class _HUDDispatcher(NSObject):
     """Helper NSObject to safely dispatch UI updates and button actions onto the main AppKit thread."""
 
@@ -109,6 +132,9 @@ class _HUDDispatcher(NSObject):
     def beginPrompt_(self, _):
         self.hud._begin_prompt_on_main_thread()
 
+    def beginFeedback_(self, _):
+        self.hud._begin_feedback_on_main_thread()
+
     @objc.IBAction
     def onAddContextClicked_(self, sender):
         self.hud._handle_add_context_clicked()
@@ -116,6 +142,10 @@ class _HUDDispatcher(NSObject):
     @objc.IBAction
     def onSendClicked_(self, sender):
         self.hud._handle_send_clicked()
+
+    @objc.IBAction
+    def onFeedbackSendClicked_(self, sender):
+        self.hud._handle_feedback_submit()
 
 
 class MacroHUD:
@@ -137,8 +167,15 @@ class MacroHUD:
         self.context_list_scroll = None
         self.context_list_view = None
 
+        # Post-Execution Feedback Controls
+        self.feedback_container = None
+        self.feedback_input_field = None
+        self.feedback_send_button = None
+        self.feedback_monitor = None
+
         self.dispatcher = _HUDDispatcher.alloc().initWithHUD_(self)
         self.field_delegate = _PromptFieldDelegate.alloc().initWithHUD_(self)
+        self.feedback_delegate = _FeedbackFieldDelegate.alloc().initWithHUD_(self)
 
         self.status_text = "Initializing..."
         self.actions = []
@@ -148,15 +185,18 @@ class MacroHUD:
         self.prompt_event = threading.Event()
         self.prompt_cancelled = False
         self.user_request_text = ""
-        self.added_context_pages = []  # List of tuples: (description_str, png_bytes)
+        self.added_context_pages = []
         self.last_external_app = None
+
+        # Synchronization for Post-Execution Feedback
+        self.feedback_event = threading.Event()
+        self.feedback_text = ""
 
     def setup_window(self):
         """Must be called on the main thread before starting the worker thread."""
         app = NSApplication.sharedApplication()
         app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-        # Track whenever another application becomes active so we know which app to restore focus to
         ws_nc = NSWorkspace.sharedWorkspace().notificationCenter()
         ws_nc.addObserverForName_object_queue_usingBlock_(
             "NSWorkspaceDidActivateApplicationNotification",
@@ -213,7 +253,7 @@ class MacroHUD:
             NSMakeRect(12, 10, self.width - 24, self.height - 40)
         )
         self.scroll_view.setDrawsBackground_(False)
-        self.scroll_view.setHasVerticalScroller_(False) 
+        self.scroll_view.setHasVerticalScroller_(False)
         self.scroll_view.setHasHorizontalScroller_(False)
 
         self.body_text_view = NSTextView.alloc().initWithFrame_(
@@ -230,14 +270,14 @@ class MacroHUD:
         self.scroll_view.setDocumentView_(self.body_text_view)
         self.content_view.addSubview_(self.scroll_view)
 
-        # Build Interactive Prompt Container (Hidden during normal execution mode)
+        # Build Interactive Prompt & Feedback Containers
         self._setup_prompt_views()
+        self._setup_feedback_views()
 
         self.panel.orderFrontRegardless()
         self._refresh_display()
 
     def _on_app_activated(self, notification):
-        """Records the most recently focused external application."""
         try:
             app = notification.userInfo().objectForKey_("NSWorkspaceApplicationKey")
             current_pid = NSRunningApplication.currentApplication().processIdentifier()
@@ -247,13 +287,11 @@ class MacroHUD:
             pass
 
     def _setup_prompt_views(self):
-        """Builds the input box, 'Add this page to context' button, and context list inside prompt_container."""
         prompt_h = 168
         self.prompt_container = NSView.alloc().initWithFrame_(NSMakeRect(12, 10, self.width - 24, prompt_h))
         self.prompt_container.setHidden_(True)
         inner_w = self.width - 24
 
-        # 1. Text Input Box + Send Button (top row of prompt container)
         send_w = 58
         self.input_field = NSTextField.alloc().initWithFrame_(
             NSMakeRect(0, prompt_h - 28, inner_w - send_w - 6, 24)
@@ -278,7 +316,6 @@ class MacroHUD:
         self.send_button.setAction_("onSendClicked:")
         self.prompt_container.addSubview_(self.send_button)
 
-        # 2. "Add this page to context" Button
         self.add_context_button = NSButton.alloc().initWithFrame_(
             NSMakeRect(0, prompt_h - 60, inner_w, 26)
         )
@@ -288,7 +325,6 @@ class MacroHUD:
         self.add_context_button.setAction_("onAddContextClicked:")
         self.prompt_container.addSubview_(self.add_context_button)
 
-        # 3. Scrollable List of Added Context Pages
         list_h = prompt_h - 68
         self.context_list_scroll = NSScrollView.alloc().initWithFrame_(
             NSMakeRect(0, 0, inner_w, list_h)
@@ -311,11 +347,39 @@ class MacroHUD:
 
         self.content_view.addSubview_(self.prompt_container)
 
+    def _setup_feedback_views(self):
+        feedback_h = 36
+        inner_w = self.width - 24
+        self.feedback_container = NSView.alloc().initWithFrame_(NSMakeRect(12, 10, inner_w, feedback_h))
+        self.feedback_container.setHidden_(True)
+
+        send_w = 58
+        self.feedback_input_field = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(0, 4, inner_w - send_w - 6, 26)
+        )
+        self.feedback_input_field.setPlaceholderString_("Optional feedback (Esc/Fn/Enter to send)...")
+        self.feedback_input_field.setFont_(NSFont.systemFontOfSize_(12.0))
+        self.feedback_input_field.setBezeled_(True)
+        self.feedback_input_field.setDrawsBackground_(True)
+        self.feedback_input_field.setBackgroundColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.16, 0.18, 0.22, 1.0)
+        )
+        self.feedback_input_field.setTextColor_(NSColor.whiteColor())
+        self.feedback_input_field.setDelegate_(self.feedback_delegate)
+        self.feedback_container.addSubview_(self.feedback_input_field)
+
+        self.feedback_send_button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(inner_w - send_w, 3, send_w, 28)
+        )
+        self.feedback_send_button.setTitle_("Send")
+        self.feedback_send_button.setBezelStyle_(NSBezelStyleRounded)
+        self.feedback_send_button.setTarget_(self.dispatcher)
+        self.feedback_send_button.setAction_("onFeedbackSendClicked:")
+        self.feedback_container.addSubview_(self.feedback_send_button)
+
+        self.content_view.addSubview_(self.feedback_container)
+
     def wait_for_user_prompt(self, target_app=None) -> tuple[bool, str, list[tuple[str, bytes]]]:
-        """
-        Blocks the background worker thread while showing the interactive prompt UI in the upper-right.
-        Returns (cancelled, user_message_str, extra_context_screenshots).
-        """
         self.prompt_event.clear()
         self.prompt_cancelled = False
         self.user_request_text = ""
@@ -326,14 +390,23 @@ class MacroHUD:
         self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_("beginPrompt:", None, True)
         self.prompt_event.wait()
 
-        # Brief pause so macOS window focus finishes returning to the underlying app
         if not self.prompt_cancelled:
             time.sleep(0.12)
 
         return self.prompt_cancelled, self.user_request_text, list(self.added_context_pages)
 
+    def wait_for_feedback(self) -> str:
+        """
+        Displays the feedback input box and waits for user text or an Esc/Fn bypass.
+        Returns the entered feedback string.
+        """
+        self.feedback_event.clear()
+        self.feedback_text = ""
+        self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_("beginFeedback:", None, True)
+        self.feedback_event.wait()
+        return self.feedback_text
+
     def _begin_prompt_on_main_thread(self):
-        # Record the currently active frontmost app right before focusing our HUD prompt
         front_app = NSWorkspace.sharedWorkspace().frontmostApplication()
         current_pid = NSRunningApplication.currentApplication().processIdentifier()
         if front_app and front_app.processIdentifier() != current_pid:
@@ -342,16 +415,15 @@ class MacroHUD:
         self.status_text = "Specify Request"
         self.status_label.setStringValue_(f"⚡ {self.status_text}")
 
-        # Resize HUD to fit the interactive prompt box cleanly anchored in the top-right corner
         target_h = 214
         self._resize_panel_top_right(target_h)
 
         self.scroll_view.setHidden_(True)
+        self.feedback_container.setHidden_(True)
         self.prompt_container.setHidden_(False)
         self.input_field.setStringValue_("")
         self._refresh_context_list_text()
 
-        # Enable mouse interaction and focus the text field so user can type immediately
         self.panel.setIgnoresMouseEvents_(False)
         self.panel.setAlphaValue_(1.0)
         self.panel.orderFrontRegardless()
@@ -365,13 +437,77 @@ class MacroHUD:
         self.panel.makeFirstResponder_(self.input_field)
         self.input_field.selectText_(None)
 
+    def _begin_feedback_on_main_thread(self):
+        self.status_text = "Execution Complete — Feedback?"
+        self.status_label.setStringValue_(f"⚡ {self.status_text}")
+
+        target_h = 82
+        self._resize_panel_top_right(target_h)
+
+        self.scroll_view.setHidden_(True)
+        self.prompt_container.setHidden_(True)
+        self.feedback_container.setHidden_(False)
+        self.feedback_input_field.setStringValue_("")
+
+        self.panel.setIgnoresMouseEvents_(False)
+        self.panel.setAlphaValue_(1.0)
+        self.panel.orderFrontRegardless()
+
+        curr_app = NSRunningApplication.currentApplication()
+        curr_app.activateWithOptions_(
+            NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows
+        )
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        self.panel.makeKeyAndOrderFront_(None)
+        self.panel.makeFirstResponder_(self.feedback_input_field)
+        self.feedback_input_field.selectText_(None)
+
+        self._start_feedback_key_monitor()
+
+    def _start_feedback_key_monitor(self):
+        self._stop_feedback_key_monitor()
+        fn_flag = getattr(Quartz, "kCGEventFlagMaskSecondaryFn", 0)
+
+        def _handle_event(event):
+            keycode = event.keyCode() if event.type() == Quartz.NSKeyDown else None
+            is_esc = keycode == 0x35
+            is_fn = bool(fn_flag and (event.modifierFlags() & fn_flag))
+            if is_esc or is_fn:
+                self._handle_feedback_submit()
+
+        try:
+            self.feedback_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                Quartz.NSKeyDownMask | Quartz.NSFlagsChangedMask,
+                lambda evt: (_handle_event(evt), evt)[1],
+            )
+        except Exception as exc:
+            debug_print(f"[HUD] Feedback monitor setup warning: {exc}", "warning")
+
+    def _stop_feedback_key_monitor(self):
+        if self.feedback_monitor is not None:
+            try:
+                NSEvent.removeMonitor_(self.feedback_monitor)
+            except Exception:
+                pass
+            self.feedback_monitor = None
+
+    def _handle_feedback_submit(self):
+        self._stop_feedback_key_monitor()
+        if self.feedback_input_field:
+            self.feedback_text = str(self.feedback_input_field.stringValue() or "").strip()
+        else:
+            self.feedback_text = ""
+        self.feedback_container.setHidden_(True)
+        if self.panel:
+            self.panel.setIgnoresMouseEvents_(True)
+            self.panel.resignKeyWindow()
+        self.feedback_event.set()
+
     def _refresh_context_list_text(self):
         if not self.context_list_view:
             return
         if not self.added_context_pages:
-            self.context_list_view.setString_(
-                "Added context pages: (none)\n"
-            )
+            self.context_list_view.setString_("Added context pages: (none)\n")
         else:
             lines = [f"Added context pages ({len(self.added_context_pages)}):"]
             for i, (desc, _) in enumerate(self.added_context_pages, 1):
@@ -385,20 +521,18 @@ class MacroHUD:
             self.added_context_pages.append(captured)
             self._refresh_context_list_text()
             self.status_label.setStringValue_(f"⚡ Added: {captured[0]}")
-        # Keep the text input focused so hitting Enter right after still sends immediately
         if self.panel and self.input_field:
             self.panel.makeFirstResponder_(self.input_field)
             self.input_field.selectText_(None)
 
     def _restore_execution_mode_on_main_thread(self):
-        """Switches HUD back to click-through execution mode and restores focus to the user's app."""
         self.prompt_container.setHidden_(True)
+        self.feedback_container.setHidden_(True)
         self.scroll_view.setHidden_(False)
         if self.panel:
             self.panel.setIgnoresMouseEvents_(True)
             self.panel.resignKeyWindow()
 
-        # Reactivate the external application the user was interacting with
         if self.last_external_app:
             try:
                 self.last_external_app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
@@ -439,9 +573,10 @@ class MacroHUD:
             self.status_label.setFrame_(NSMakeRect(12, new_height - 24, w - 24, 18))
         if self.prompt_container:
             self.prompt_container.setFrame_(NSMakeRect(12, 10, w - 24, new_height - 38))
+        if self.feedback_container:
+            self.feedback_container.setFrame_(NSMakeRect(12, 10, w - 24, new_height - 38))
 
     def show_for_run(self):
-        """Reset and show a reusable HUD for the next resident run."""
         self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_("showHUD:", None, True)
 
     def _show_for_run_on_main_thread(self):
@@ -450,6 +585,8 @@ class MacroHUD:
         self.analysis = None
         if self.prompt_container:
             self.prompt_container.setHidden_(True)
+        if self.feedback_container:
+            self.feedback_container.setHidden_(True)
         if self.scroll_view:
             self.scroll_view.setHidden_(False)
         if self.panel:
@@ -462,7 +599,6 @@ class MacroHUD:
             self.body_text_view.setString_("Preparing macro context...")
 
     def update(self, status_text: str | None = None, actions: list | None = None, analysis: dict | None = None, wait: bool = False):
-        """Thread-safe method called from background worker thread to update the HUD."""
         payload = {
             "status_text": status_text,
             "actions": actions,
@@ -471,15 +607,13 @@ class MacroHUD:
         self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_(
             "applyState:", payload, wait
         )
-        
+
     def dismiss_instantly(self):
-        """Immediately closes the window and terminates the run loop without waiting."""
         self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_(
             "closeHUD:", None, False
         )
 
     def close_after_delay(self, seconds: float = 2.0):
-        """Close one-shot HUDs or hide resident HUDs after a delay."""
         def _delayed():
             time.sleep(seconds)
             if self.resident:
@@ -575,6 +709,7 @@ class MacroHUD:
             self.body_text_view.setFrame_(NSMakeRect(0, 0, w - 24, max(text_height, new_height - 38)))
 
     def _close_on_main_thread(self):
+        self._stop_feedback_key_monitor()
         if self.panel:
             self.panel.close()
             self.panel = None
@@ -582,6 +717,7 @@ class MacroHUD:
         AppHelper.stopEventLoop()
 
     def _hide_on_main_thread(self):
+        self._stop_feedback_key_monitor()
         if self.panel:
             self.panel.setIgnoresMouseEvents_(True)
             self.panel.setAlphaValue_(0.0)
