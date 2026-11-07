@@ -2,18 +2,17 @@
 
 import json
 import re
+import signal
+import subprocess
+import time
 from collections import deque
 from datetime import datetime
-import subprocess
-import signal
 from pathlib import Path
-from infrastructure.debugging import debug_print
-
-import io
-from PIL import Image, ImageDraw, ImageFont
 
 import ApplicationServices
+import io
 import objc
+from PIL import Image, ImageDraw, ImageFont
 import Quartz
 from AppKit import (
     NSBitmapImageRep,
@@ -23,6 +22,7 @@ from AppKit import (
     NSWorkspace,
 )
 
+from infrastructure.debugging import debug_print
 from infrastructure.scrubber import scrub_text
 from .runtime import (
     DATA_DIR,
@@ -229,7 +229,7 @@ def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]
             app_w = int(bounds.get("Width", 0))
             app_h = int(bounds.get("Height", 0))
 
-            # CRITICAL: Add kCGWindowImageBoundsIgnoreFraming to strip the invisible drop shadow
+            # Strip the invisible drop shadow
             image = Quartz.CGWindowListCreateImage(
                 Quartz.CGRectNull,
                 Quartz.kCGWindowListOptionIncludingWindow,
@@ -290,7 +290,6 @@ def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> 
             list_option = Quartz.kCGWindowListOptionOnScreenOnly
             window_id = Quartz.kCGNullWindowID
 
-        # Add kCGWindowImageBoundsIgnoreFraming here as well just to be safe
         image = Quartz.CGWindowListCreateImage(
             Quartz.CGRectInfinite,
             list_option,
@@ -304,7 +303,6 @@ def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> 
         if not png_data:
             return None
         
-        # Screen capture is full screen, so we don't supply app_width/app_height offsets
         processed_bytes = _overlay_coordinate_grid(bytes(png_data), label=desc)
         debug_print(f"[MacroSynth] Added full-screen page context with grid: '{desc}'", "info")
         return (desc, processed_bytes)
@@ -321,7 +319,15 @@ def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
     with log_file.open("r", encoding="utf-8", errors="ignore") as log_file_handle:
         return "".join(deque(log_file_handle, maxlen=n))
 
-def build_prompt_context(target_app=None) -> tuple[str, str, str, list[tuple[str, bytes]], str]:
+def build_prompt_context(
+    target_app=None,
+    recorder: "ScreenRecorder | None" = None,
+    recording_output_path: Path | None = None,
+) -> tuple[str, str, str, list[tuple[str, bytes]], str]:
+    """
+    Builds context artifacts. If a recorder is supplied, recording starts
+    right before the final context payload is returned to be sent to Gemini.
+    """
     raw_log_tail = get_last_n_log_lines()
     scrubbed_log = scrub_text(raw_log_tail)
     debug_print(
@@ -341,6 +347,11 @@ def build_prompt_context(target_app=None) -> tuple[str, str, str, list[tuple[str
         f"[MacroSynth] Prepared DOM, clipboard, and {len(screenshots)} screenshot attachment(s): {labels}.",
         "debug",
     )
+
+    # Start the screen recording right before dispatching the prompt to Gemini
+    if recorder and recording_output_path:
+        recorder.start(recording_output_path)
+
     return scrubbed_clipboard, scrubbed_log, scrubbed_dom, screenshots, labels
 
 class ScreenRecorder:
@@ -348,8 +359,13 @@ class ScreenRecorder:
         self.process = None
         self.filepath = None
 
-    def start(self, filepath: Path):
-        self.filepath = filepath
+    def start(self, filepath: Path | None = None):
+        if filepath:
+            self.filepath = Path(filepath)
+        if not self.filepath:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.filepath = SCREEN_CONTEXTS_DIR / f"run_{timestamp}.mp4"
+
         self.filepath.parent.mkdir(parents=True, exist_ok=True)
         self.process = subprocess.Popen(
             ["screencapture", "-v", str(self.filepath)],
@@ -359,8 +375,13 @@ class ScreenRecorder:
         )
         debug_print(f"[ScreenRecorder] Started recording to {self.filepath.name}", "system")
 
-    def stop(self):
+    def stop(self, post_buffer_seconds: float = 1.0):
+        """Stops the recording after an optional trailing buffer delay."""
         if self.process:
+            if post_buffer_seconds > 0:
+                debug_print(f"[ScreenRecorder] Waiting {post_buffer_seconds}s buffer before stopping recording...", "system")
+                time.sleep(post_buffer_seconds)
+
             self.process.send_signal(signal.SIGINT)
             self.process.wait()
             self.process = None

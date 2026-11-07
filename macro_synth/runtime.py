@@ -23,7 +23,7 @@ MOUSE_CLICK_DOWN_TIME_MS = 5      # Hold time while mouse button is pressed down
 MOUSE_CLICK_UP_TIME_MS = 10       # Delay after mouse button release / between clicks in click_mouse
 MOUSE_SCROLL_MOVE_DELAY_MS = 10   # Delay after moving mouse before scrolling in scroll_mouse
 MOUSE_SCROLL_DELAY_MS = 15        # Settling delay after sending scroll event in scroll_mouse
-WIDTH = 300
+WIDTH = 150
 HEIGHT = 200
 
 GLOBAL_ROOT = Path.home() / ".agents"
