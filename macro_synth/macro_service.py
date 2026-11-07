@@ -90,7 +90,7 @@ def run_macro_once(hud: MacroHUD):
             "Synthesize the <MacroAnalysis> and the XML action sequence with per-step reasoning now."
         )
 
-        hud.update(status_text="Parsing actions with Gemini...", wait=True)
+        hud.update(status_text="Parsing actions...", wait=True)
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(
                 send_prompt,
