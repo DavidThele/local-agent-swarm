@@ -7,7 +7,17 @@ from AppKit import NSEvent
 
 from infrastructure.debugging import debug_print
 from .runtime import (
+    KEY_COMBO_DOWN_TIME_MS,
+    KEY_COMBO_UP_TIME_MS,
+    KEY_PRESS_DOWN_TIME_MS,
+    KEY_PRESS_UP_TIME_MS,
+    MOUSE_CLICK_DOWN_TIME_MS,
+    MOUSE_CLICK_MOVE_DELAY_MS,
+    MOUSE_CLICK_UP_TIME_MS,
+    MOUSE_SCROLL_DELAY_MS,
+    MOUSE_SCROLL_MOVE_DELAY_MS,
     SYNTHETIC_EVENT_TAG,
+    TYPING_BUFFER_TIME_MS,
     abort_event,
     abort_lock,
     global_event_monitor,
@@ -139,9 +149,9 @@ def press_single_key(key_name: str, count: int = 1):
     for _ in range(count):
         if abort_event.is_set() or not _post_tagged_key_event(keycode, True):
             return
-        time.sleep(0.015)
+        time.sleep(KEY_PRESS_DOWN_TIME_MS / 1000.0)
         _post_tagged_key_event(keycode, False)
-        time.sleep(0.025)
+        time.sleep(KEY_PRESS_UP_TIME_MS / 1000.0)
 
 
 def _post_tagged_key_event(keycode, key_down, flags=0):
@@ -164,9 +174,9 @@ def press_key_combo(combo_str: str):
         return
     if not _post_tagged_key_event(KEYCODE_MAP[main_key], True, flags):
         return
-    time.sleep(0.02)
+    time.sleep(KEY_COMBO_DOWN_TIME_MS / 1000.0)
     _post_tagged_key_event(KEYCODE_MAP[main_key], False, flags)
-    time.sleep(0.04)
+    time.sleep(KEY_COMBO_UP_TIME_MS / 1000.0)
 
 
 def type_unicode_string(text: str):
@@ -181,7 +191,7 @@ def type_unicode_string(text: str):
             Quartz.CGEventKeyboardSetUnicodeString(event, len(char), char)
             Quartz.CGEventSetIntegerValueField(event, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
             _post_synthetic_event(event, allow_after_abort=not key_down)
-        time.sleep(0.008)
+        time.sleep(TYPING_BUFFER_TIME_MS / 1000.0)
 
 
 def click_mouse(x: float, y: float, button="left", count=1) -> bool:
@@ -196,19 +206,19 @@ def click_mouse(x: float, y: float, button="left", count=1) -> bool:
     Quartz.CGEventSetIntegerValueField(move_evt, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
     if not _post_synthetic_event(move_evt):
         return False
-    time.sleep(0.03)
+    time.sleep(MOUSE_CLICK_MOVE_DELAY_MS / 1000.0)
     for click_num in range(1, count + 1):
         down_evt = Quartz.CGEventCreateMouseEvent(None, down_type, point, mouse_button)
         Quartz.CGEventSetIntegerValueField(down_evt, Quartz.kCGMouseEventClickState, click_num)
         Quartz.CGEventSetIntegerValueField(down_evt, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
         if not _post_synthetic_event(down_evt):
             return False
-        time.sleep(0.015)
+        time.sleep(MOUSE_CLICK_DOWN_TIME_MS / 1000.0)
         up_evt = Quartz.CGEventCreateMouseEvent(None, up_type, point, mouse_button)
         Quartz.CGEventSetIntegerValueField(up_evt, Quartz.kCGMouseEventClickState, click_num)
         Quartz.CGEventSetIntegerValueField(up_evt, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
         _post_synthetic_event(up_evt, allow_after_abort=True)
-        time.sleep(0.025)
+        time.sleep(MOUSE_CLICK_UP_TIME_MS / 1000.0)
     return True
 
 
@@ -221,11 +231,11 @@ def scroll_mouse(dx: int, dy: int, x=None, y=None):
         Quartz.CGEventSetIntegerValueField(move_evt, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
         if not _post_synthetic_event(move_evt):
             return
-        time.sleep(0.02)
+        time.sleep(MOUSE_SCROLL_MOVE_DELAY_MS / 1000.0)
     scroll_evt = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGEventUnitLine, 2, int(dy), int(dx))
     Quartz.CGEventSetIntegerValueField(scroll_evt, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
     _post_synthetic_event(scroll_evt)
-    time.sleep(0.03)
+    time.sleep(MOUSE_SCROLL_DELAY_MS / 1000.0)
 
 
 def interruptible_wait(ms: int):
