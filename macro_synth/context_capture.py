@@ -257,10 +257,10 @@ def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]
         )
         return screenshots
 
-def get_frontmost_window_description() -> str:
+def get_frontmost_window_description(target_app=None) -> str:
     with objc.autorelease_pool():
         workspace = NSWorkspace.sharedWorkspace()
-        app = workspace.frontmostApplication()
+        app = target_app or workspace.frontmostApplication()
         if not app:
             return "Screen Context"
         app_name = str(app.localizedName() or "App")
@@ -277,9 +277,12 @@ def get_frontmost_window_description() -> str:
                     return f"{app_name} - {title_str}"
         return app_name
 
-def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> tuple[str, bytes] | None:
+def capture_screen_context_exclude_hud(
+    hud_window_number: int | None = None,
+    target_app=None,
+) -> tuple[str, bytes] | None:
     with objc.autorelease_pool():
-        desc = get_frontmost_window_description()
+        desc = get_frontmost_window_description(target_app=target_app)
         if hud_window_number and hud_window_number > 0:
             list_option = (
                 Quartz.kCGWindowListOptionOnScreenBelowWindow
@@ -306,7 +309,7 @@ def capture_screen_context_exclude_hud(hud_window_number: int | None = None) -> 
         processed_bytes = _overlay_coordinate_grid(bytes(png_data), label=desc)
         debug_print(f"[MacroSynth] Added full-screen page context with grid: '{desc}'", "info")
         return (desc, processed_bytes)
-
+    
 def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     log_file = DATA_DIR / today_str / "activity.log"

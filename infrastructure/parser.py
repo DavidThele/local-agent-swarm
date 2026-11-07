@@ -170,6 +170,9 @@ def parse_llm_output(text: str) -> List[ParsedCommand]:
     if not text:
         return []
 
+    # Normalize non-breaking spaces and zero-width spaces common in LLM outputs
+    text = text.replace('\xa0', ' ').replace('\u200b', '')
+
     commands = []
     for safe_block in _extract_top_level_xml_blocks(text):
         try:

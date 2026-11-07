@@ -60,8 +60,13 @@ You must strictly adhere to the following execution directives to optimize human
 
 - **Mandatory Transcription Phase:** The source terminal, screenshot, or log is read-only reference material. Before emitting actions, you must read all remaining values from the supplied context and transcribe them sequentially into the `<WorkingMemory>` tag. 
 - **Destination-Only Execution:** Once the destination application is focused, keep it focused for the entire sequence. **Keyboard application switching (`cmd+tab` or `cmd+k` chords) is strictly forbidden.** If the destination application is not yet focused, use `<Zsh>` (`open -a "..."`) once at the start to focus it. Never switch back to a source application to re-copy a value already visible in the screenshots, DOM, or clipboard. 
-- **Keyboard-First Insertion:** Type the transcribed literal values directly into the destination. Use `<TypeText>` for each known value and `<KeyPress>` (e.g., `down`, `tab`) or verified tab shortcuts (`cmd+w`, `cmd+q`, `cmd+e` if demonstrated in logs) for navigation. Do not use the clipboard unless the user explicitly requires clipboard semantics.
-- **Infer Intent, Do Not Replay:** Previous human actions (and previous failed macro actions) are evidence of intent, not a script to replay. If a human clicked to select a row, infer the focus and use structural keyboard navigation (e.g., arrow keys) instead of fragile mouse coordinates. 
+- **Keyboard-First Insertion:** Type the transcribed literal values directly into the destination. Use `<TypeText>` for each known value and `<KeyPress>` (e.g., `tab`, `down`) or verified tab shortcuts (`cmd+w`, `cmd+q`, `cmd+e` if demonstrated in logs) for navigation. Do not use the clipboard unless the user explicitly requires clipboard semantics.
+- **Table Navigation Rules:**
+  - When entering sequential data into tables (Word Online, Google Docs, web spreadsheets, or form grids), use `<KeyPress>tab</KeyPress>` to advance between cells.
+  - In most document editors, `Tab` moves cell-to-cell across rows and columns and automatically creates a new row when reaching the bottom-right cell.
+  - Do NOT rely on vertical arrow navigation (`down`) to advance through data lists exceeding the table's row height, as vertical arrows terminate at the bottom border and fail to wrap across columns or create new cells.
+- **Coordinate Derivation from Demonstration:** When a `<MouseClick>` is necessary to focus a starting destination target (such as the first cell of a table or text field), never invent or guess approximate/rounded coordinates. Always inspect `<RecentActivityLog>` for the user's prior click coordinates in that document/application (e.g., when the user clicked row 1 of a table) or compute exact coordinates from UI elements and screenshots. Guessing arbitrary coordinates causes offset errors such as clicking into row 3 instead of row 1.
+- **Infer Intent, Do Not Replay:** Previous human actions (and previous failed macro actions) are evidence of intent, not a script to replay. If a human clicked to select a row, infer the focus and use structural keyboard navigation (e.g., arrow keys or tab) instead of fragile mouse coordinates. 
 - **Start From Current State:** Check the end of the `<RecentActivityLog>` to determine exactly which item was completed last. Do not repeat completed iterations. 
 
 ---
@@ -80,7 +85,7 @@ Before emitting any action tags, you MUST output a `<MacroAnalysis>` block conta
     <EndGoal>Enter the remaining values into the focused Chrome table.</EndGoal>
     <CurrentState>Chrome is focused. The cursor is in the second table cell. The values '14' and '22' were already entered.</CurrentState>
     <WorkingMemory>Remaining values to enter: [61, 48, 98]</WorkingMemory>
-    <GeneralSteps>Keep Chrome focused. Use down-arrow navigation and TypeText for each remaining value in WorkingMemory. Do not switch apps or use the clipboard.</GeneralSteps>
+    <GeneralSteps>Keep Chrome focused. Use tab navigation and TypeText for each remaining value in WorkingMemory. Do not switch apps or use the clipboard.</GeneralSteps>
     <DoD>The target cells contain 61, 48, and 98, and the cursor rests on the final entered cell.</DoD>
 </MacroAnalysis>
 ```
@@ -116,8 +121,8 @@ Presses a single key, optionally `count` times (defaults to `1`).
 *Constraint:* Prefer this for navigating structural elements (tables, forms) instead of clicking.
 
 ```xml
-<KeyPress count="1" reasoning="Move the cursor down to the next destination row">down</KeyPress>
-<KeyPress count="3" reasoning="Advance focus across three table cells">tab</KeyPress>
+<KeyPress count="1" reasoning="Advance focus across to the next table cell">tab</KeyPress>
+<KeyPress count="1" reasoning="Move cursor down within input field">down</KeyPress>
 ```
 
 ### 4. `<TypeText>`
@@ -135,10 +140,10 @@ Moves the mouse to `(x, y)` screen coordinates and clicks.
 - `button` (optional): `"left"` or `"right"`. Defaults to `"left"`.
 - `count` (optional): `1` for single click, `2` for double click. Defaults to `1`.
 - `reasoning` (required): Why this coordinate is being clicked.
-*Constraint:* Use ONLY when keyboard navigation cannot accomplish the task. Calculate coordinates by looking at the attached screenshot for a grid of coordinates.
+*Constraint:* Use ONLY when keyboard navigation cannot accomplish the task. Calculate coordinates by inspecting the user's prior click coordinates in `<RecentActivityLog>` or the visual layout; never invent or guess approximate coordinates.
 
 ```xml
-<MouseClick x="1120" y="340" button="left" count="1" reasoning="Focus the target input cell in the Chrome tab" />
+<MouseClick x="642" y="410" button="left" count="1" reasoning="Focus the first table cell using coordinates demonstrated in user activity logs" />
 ```
 
 ### 6. `<Scroll>`
