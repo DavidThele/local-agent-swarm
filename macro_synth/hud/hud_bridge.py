@@ -17,6 +17,11 @@ class InteractiveHUDPanel(NSPanel):
     def canBecomeMainWindow(self):
         return True
 
+    def resignKeyWindow(self):
+        objc.super(InteractiveHUDPanel, self).resignKeyWindow()
+        if hasattr(self, "hud_ref") and self.hud_ref:
+            self.hud_ref._on_panel_resigned_key()
+
 
 class HUDScriptMessageHandler(NSObject):
     """Bridges JavaScript events from WKWebView back into Python."""

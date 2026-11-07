@@ -67,8 +67,15 @@ hudInput.addEventListener("keydown", (e) => {
     if (currentMode === "prompt") {
       postToPython({ type: "cancel_prompt" });
     } else if (currentMode === "feedback") {
-      triggerSubmit();
+      postToPython({ type: "dismiss_feedback" });
     }
+  }
+});
+
+// Immediately dismiss when blurred in feedback mode
+hudInput.addEventListener("blur", () => {
+  if (currentMode === "feedback") {
+    postToPython({ type: "dismiss_feedback" });
   }
 });
 
@@ -144,10 +151,6 @@ function renderArcActions(actions) {
     const id = String(idx);
     activeIds.add(id);
 
-    // Left-to-right flow:
-    // Upcoming actions (idx > centerIdx) sit on the left (negative slotOffset: -2, -1)
-    // Center executing action (idx === centerIdx) sits at bottom center (slotOffset: 0)
-    // Completed actions (idx < centerIdx) rotate to the right (positive slotOffset: +1, +2) and turn green
     const slotOffset = centerIdx - idx;
     const pose = computeSlotPose(slotOffset);
 
@@ -155,13 +158,11 @@ function renderArcActions(actions) {
     if (!el) {
       el = document.createElement("div");
       el.className = "arc-item pending";
-      // Spawn from the left entrance of the wheel so new items rotate in smoothly
       const enterPose = computeSlotPose(-3);
       el.style.transform = `translate(${enterPose.x}px, ${enterPose.y}px) translate(-50%, -50%) rotate(${enterPose.rotDeg}deg) scale(${enterPose.scale})`;
       el.style.opacity = "0";
       wheelSlots.appendChild(el);
       arcItemElements.set(id, el);
-      // Force reflow so the transition animates smoothly to target slot
       void el.offsetWidth;
     }
 
@@ -169,7 +170,6 @@ function renderArcActions(actions) {
 
     let visualState = act.state || "pending";
     if (slotOffset > 0 && visualState !== "aborted") {
-      // Past the middle point -> filled with green
       visualState = "done";
     } else if (slotOffset === 0 && visualState === "pending") {
       visualState = "active";
@@ -181,7 +181,6 @@ function renderArcActions(actions) {
     el.style.zIndex = String(10 - Math.abs(slotOffset));
   });
 
-  // Clean up removed action nodes
   for (const [id, el] of arcItemElements.entries()) {
     if (!activeIds.has(id)) {
       el.remove();
