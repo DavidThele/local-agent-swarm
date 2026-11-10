@@ -322,6 +322,65 @@ def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
     with log_file.open("r", encoding="utf-8", errors="ignore") as log_file_handle:
         return "".join(deque(log_file_handle, maxlen=n))
 
+def compact_dom(node: dict, context_path: str = "") -> str:
+    """
+    Recursively flattens the deep DOM dictionary into a concise list of actionable
+    leaves with their screen coordinates, dropping sizes and invisible wrappers.
+    """
+    # Handle the root wrapper from get_deep_active_dom
+    if "window_tree" in node:
+        app_name = node.get("active_app", "App")
+        tree_str = compact_dom(node["window_tree"], app_name)
+        return f"=== {app_name} Active Window ===\n{tree_str}"
+
+    if not isinstance(node, dict):
+        return ""
+
+    lines = []
+    role = node.get("role", "").replace("AX", "")
+    title = node.get("title") or node.get("desc") or node.get("placeholder")
+    value = node.get("value")
+    pos = node.get("pos")
+
+    # Update breadcrumb context for major structural boundaries
+    current_path = context_path
+    if role in ("Window", "Sheet", "Dialog") and title:
+        # Keep path short by replacing it rather than infinitely appending
+        current_path = f"{context_path} > {title}" if context_path else title
+
+    # A node is "actionable" if it has screen coordinates AND contains text/value 
+    # OR is a distinctly interactive UI element.
+    interactive_roles = {
+        "Button", "TextField", "TextArea", "Link", "CheckBox",
+        "RadioButton", "PopUpButton", "ComboBox", "MenuItem", "StaticText"
+    }
+
+    if pos and (title or value or role in interactive_roles):
+        parts = [f"[{role}]"] if role else []
+        
+        if title:
+            # Strip excessive whitespace/newlines for a flat string
+            clean_title = " ".join(str(title).split())[:60]
+            parts.append(f'"{clean_title}"')
+            
+        if value:
+            clean_val = " ".join(str(value).split())[:60]
+            parts.append(f'(Val: "{clean_val}")')
+
+        parts.append(f"@ {pos[0]},{pos[1]}")
+
+        node_str = " ".join(parts)
+        prefix = f"{current_path} > " if current_path else ""
+        lines.append(f"{prefix}{node_str}")
+
+    # Recurse into children
+    for child in node.get("children", []):
+        child_str = compact_dom(child, current_path)
+        if child_str:
+            lines.append(child_str)
+
+    return "\n".join(lines)
+
 def build_prompt_context(
     target_app=None,
     recorder: "ScreenRecorder | None" = None,
@@ -339,7 +398,8 @@ def build_prompt_context(
     )
 
     deep_dom = get_deep_active_dom(target_app=target_app)
-    scrubbed_dom = scrub_text(json.dumps(deep_dom, indent=2))
+    compacted_dom_string = compact_dom(deep_dom)
+    scrubbed_dom = scrub_text(compacted_dom_string)
     scrubbed_clipboard = scrub_text(get_clipboard_text())
     recent_apps = get_recent_app_names(raw_log_tail)
     if not recent_apps and deep_dom.get("active_app"):
