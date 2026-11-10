@@ -163,7 +163,8 @@ def run_agent(
         llm_output, chat_history, cost = send_prompt(
             prompt_text=current_prompt,
             model=model_to_use,
-            chat_history=chat_history
+            chat_history=chat_history,
+            google_search=True,
         )
         if isinstance(cost, dict):
             cumulative_cost += cost.get("total_cost", 0.0)

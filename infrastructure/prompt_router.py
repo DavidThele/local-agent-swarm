@@ -30,6 +30,7 @@ def send_prompt(
     print_cost=True,
     image_data=None,
     media_files=None,
+    google_search=False,
 ):
     if chat_history is None:
         chat_history = []
@@ -56,12 +57,17 @@ def send_prompt(
     delays = [10, 20, 30]
     response = None
 
+    config_args = {}
+    if google_search:
+        config_args["tools"] = [{"google_search": {}}]
+
     for attempt, delay in enumerate(delays, start=1):
         try:
             print(f"DEBUG: Calling generate_content with model = {repr(model)}")
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
+                config=config_args,
             )
             break
         except APIError as e:
@@ -76,6 +82,7 @@ def send_prompt(
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
+                config=config_args,
             )
         except APIError as e:
             if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
