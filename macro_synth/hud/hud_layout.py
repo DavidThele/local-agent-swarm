@@ -18,12 +18,15 @@ from AppKit import (
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowStyleMaskBorderless,
+    NSNotificationCenter,
+    NSWindowDidResignKeyNotification
 )
 import Quartz
 import WebKit
 from PyObjCTools import AppHelper
 from infrastructure.debugging import debug_print
 from ..context_capture import capture_screen_context_exclude_hud
+from ..speech_engine import NativeSpeechEngine
 from .hud_config import (
     BASE_CANVAS_HEIGHT,
     BASE_CANVAS_WIDTH,
@@ -39,7 +42,6 @@ from .hud_bridge import (
     HUDScriptMessageHandler,
     InteractiveHUDPanel,
 )
-
 
 def _load_hud_html(scale: float) -> str:
     """Reads and assembles hud.html, hud.css, and hud.js from the hud_assets directory."""
@@ -77,7 +79,11 @@ class MacroHUD:
         self.script_handler = None
         self.feedback_monitor = None
         self.feedback_global_monitor = None
+        self.prompt_key_monitor = None
         self._refocus_timer = None
+
+        # Native Speech Recognition Engine
+        self.speech_engine = None
 
         self.dispatcher = HUDDispatcher.alloc().initWithHUD_(self)
 
@@ -97,6 +103,7 @@ class MacroHUD:
         # Synchronization for Post-Execution Feedback
         self.feedback_event = threading.Event()
         self.feedback_text = ""
+        self.feedback_cancelled = False
 
     def setup_window(self):
         """Must be called on the main thread before starting the worker thread."""
@@ -134,6 +141,15 @@ class MacroHUD:
         self.panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
+        # Register notification for window unfocus / resign key
+        nc = NSApplication.sharedApplication().notificationCenter() if hasattr(NSApplication.sharedApplication(), "notificationCenter") else None
+        # Register notification for window unfocus / resign key
+        NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
+            NSWindowDidResignKeyNotification,
+            self.panel,
+            None,
+            lambda note: AppHelper.callAfter(self._on_panel_resigned_key),
+        )
 
         config = WebKit.WKWebViewConfiguration.alloc().init()
         user_controller = WebKit.WKUserContentController.alloc().init()
@@ -153,6 +169,25 @@ class MacroHUD:
         self.panel.setContentView_(self.webview)
         self.panel.orderFrontRegardless()
 
+        # Initialize speech engine hooks
+        self.speech_engine = NativeSpeechEngine(
+            on_partial_text=self._on_speech_partial,
+            on_audio_levels=self._on_audio_levels,
+        )
+    def _on_speech_partial(self, text: str):
+        def _push():
+            if self.mode == "prompt" and self.webview:
+                js = f"if (window.appendTranscript) {{ window.appendTranscript({json.dumps(text)}); }}"
+                self.webview.evaluateJavaScript_completionHandler_(js, None)
+        AppHelper.callAfter(_push)
+
+    def _on_audio_levels(self, bands: list[float]):
+        def _push():
+            if self.mode == "prompt" and self.webview:
+                js = f"if (window.setAudioLevels) {{ window.setAudioLevels({json.dumps(bands)}); }}"
+                self.webview.evaluateJavaScript_completionHandler_(js, None)
+        AppHelper.callAfter(_push)
+
     def _compute_window_origin(self) -> tuple[float, float]:
         screen_frame = NSScreen.mainScreen().visibleFrame()
         x = (
@@ -166,7 +201,7 @@ class MacroHUD:
             else screen_frame.origin.y + screen_frame.size.height - self.height - HUD_MARGIN_TOP
         )
         return x, y
-
+    
     def set_scale(self, new_scale: float):
         """Dynamically updates the universal scalar and resizes the HUD window accordingly."""
         self.scale = float(new_scale)
@@ -219,7 +254,7 @@ class MacroHUD:
     def _on_panel_resigned_key(self):
         """Called whenever the panel loses key status."""
         if self.mode == "feedback":
-            self._handle_feedback_dismiss()
+            AppHelper.callAfter(self._handle_feedback_dismiss)
         elif self.mode == "prompt":
             self._schedule_prompt_refocus(0.15)
 
@@ -256,10 +291,16 @@ class MacroHUD:
 
     def _handle_js_message(self, data: dict):
         msg_type = data.get("type")
-        if msg_type == "submit_prompt":
+        if msg_type == "stop_listening":
+            self._stop_speech_listening()
+        elif msg_type == "submit_prompt":
+            self._stop_speech_listening()
+            self._stop_prompt_key_monitor()
             self.user_request_text = str(data.get("text") or "").strip()
             self._handle_send_clicked()
         elif msg_type == "cancel_prompt":
+            self._stop_speech_listening()
+            self._stop_prompt_key_monitor()
             self._handle_cancel_clicked()
         elif msg_type == "add_context":
             self._handle_add_context_clicked()
@@ -268,18 +309,20 @@ class MacroHUD:
             if isinstance(idx, int) and 0 <= idx < len(self.added_context_pages):
                 removed = self.added_context_pages.pop(idx)
                 debug_print(f"[HUD] Removed context page: {removed[0]}", "data")
-                # Ensure panel retains key status and re-focuses the input box on removal
                 if self.panel:
                     NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
                     self.panel.makeKeyAndOrderFront_(None)
                     self.panel.makeFirstResponder_(self.webview)
                 self._push_js_state(focus_input=True)
         elif msg_type == "submit_feedback":
-            self.feedback_text = str(data.get("text") or "").strip()
+            self.feedback_cancelled = False
+            # Allow empty string if user simply hits Enter on an empty input
+            raw_text = data.get("text")
+            self.feedback_text = str(raw_text).strip() if raw_text is not None else ""
             self._complete_feedback_submission()
         elif msg_type == "dismiss_feedback":
             self._handle_feedback_dismiss()
-
+            
     def wait_for_user_prompt(self, target_app=None) -> tuple[bool, str, list[tuple[str, bytes]]]:
         self.prompt_event.clear()
         self.prompt_cancelled = False
@@ -296,15 +339,18 @@ class MacroHUD:
 
         return self.prompt_cancelled, self.user_request_text, list(self.added_context_pages)
 
-    def wait_for_feedback(self) -> str:
+    def wait_for_feedback(self) -> str | None:
         """
         Displays the feedback input box and waits for user text or an Esc/Fn/blur bypass.
-        Returns the entered feedback string.
+        Returns the entered feedback string if submitted via Enter, or None if cancelled/escaped.
         """
         self.feedback_event.clear()
+        self.feedback_cancelled = False
         self.feedback_text = ""
         self.dispatcher.performSelectorOnMainThread_withObject_waitUntilDone_("beginFeedback:", None, True)
         self.feedback_event.wait()
+        if self.feedback_cancelled:
+            return None
         return self.feedback_text
 
     def _begin_prompt_on_main_thread(self):
@@ -331,6 +377,51 @@ class MacroHUD:
 
         self._push_js_state(clear_input=True, focus_input=True)
 
+        # Start Speech Recognition and activate visual orbit dots
+        if self.speech_engine:
+            self.speech_engine.start()
+        if self.webview:
+            self.webview.evaluateJavaScript_completionHandler_(
+                "if (window.setListeningActive) window.setListeningActive(true);", None
+            )
+
+        self._start_prompt_key_monitor()
+
+    def _start_prompt_key_monitor(self):
+        self._stop_prompt_key_monitor()
+        fn_flag = getattr(Quartz, "kCGEventFlagMaskSecondaryFn", 0)
+
+        def _handle_event(event):
+            is_esc = (event.type() == Quartz.NSKeyDown) and (event.keyCode() == 0x35)
+            is_fn = bool(fn_flag and (event.modifierFlags() & fn_flag))
+            if is_esc or is_fn:
+                self._stop_speech_listening()
+                self._handle_cancel_clicked()
+            return event
+
+        try:
+            self.prompt_key_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                Quartz.NSKeyDownMask | Quartz.NSFlagsChangedMask, _handle_event
+            )
+        except Exception as exc:
+            debug_print(f"[HUD] Prompt key monitor setup warning: {exc}", "warning")
+
+    def _stop_prompt_key_monitor(self):
+        if self.prompt_key_monitor is not None:
+            try:
+                NSEvent.removeMonitor_(self.prompt_key_monitor)
+            except Exception:
+                pass
+            self.prompt_key_monitor = None
+
+    def _stop_speech_listening(self):
+        if self.speech_engine:
+            self.speech_engine.stop()
+        if self.webview:
+            self.webview.evaluateJavaScript_completionHandler_(
+                "if (window.setListeningActive) window.setListeningActive(false);", None
+            )
+
     def _begin_feedback_on_main_thread(self):
         self.mode = "feedback"
         self.status_text = "Enter feedback..."
@@ -354,13 +445,13 @@ class MacroHUD:
         self._stop_feedback_key_monitor()
         fn_flag = getattr(Quartz, "kCGEventFlagMaskSecondaryFn", 0)
 
-        # 1. Local monitor for Esc and Fn keys inside HUD
+        # 1. Local monitor for Esc and Fn keys when HUD is key window
         def _handle_local_event(event):
             keycode = event.keyCode() if event.type() == Quartz.NSKeyDown else None
             is_esc = keycode == 0x35
             is_fn = bool(fn_flag and (event.modifierFlags() & fn_flag))
             if is_esc or is_fn:
-                self._handle_feedback_dismiss()
+                AppHelper.callAfter(self._handle_feedback_dismiss)
             return event
 
         try:
@@ -372,17 +463,29 @@ class MacroHUD:
             debug_print(f"[HUD] Feedback local monitor setup warning: {exc}", "warning")
 
         # 2. Global monitor for outside clicks or global Esc/Fn
+        monitor_start_time = time.time()
+
         def _handle_global_event(event):
+            # Ignore clicks within the first 150ms of activation to prevent swallowing the focus click
+            if time.time() - monitor_start_time < 0.15:
+                return
+
             evt_type = event.type()
             if evt_type in (Quartz.NSLeftMouseDown, Quartz.NSRightMouseDown, Quartz.NSOtherMouseDown):
-                self._handle_feedback_dismiss()
+                # Check if mouse click fell outside HUD panel frame
+                if self.panel:
+                    mouse_loc = NSEvent.mouseLocation()
+                    panel_frame = self.panel.frame()
+                    if Quartz.NSPointInRect(mouse_loc, panel_frame):
+                        return
+                AppHelper.callAfter(self._handle_feedback_dismiss)
                 return
 
             keycode = event.keyCode() if evt_type == Quartz.NSKeyDown else None
             is_esc = keycode == 0x35
             is_fn = bool(fn_flag and (event.modifierFlags() & fn_flag))
             if is_esc or is_fn:
-                self._handle_feedback_dismiss()
+                AppHelper.callAfter(self._handle_feedback_dismiss)
 
         try:
             self.feedback_global_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
@@ -412,27 +515,24 @@ class MacroHUD:
             self.feedback_global_monitor = None
 
     def _handle_feedback_dismiss(self):
-        """Immediately captures text, submits, and hides the panel on blur/escape."""
+        """Immediately marks feedback as cancelled and hides the panel on blur/escape."""
         if not self.feedback_event.is_set():
-            def _on_eval(val, err):
-                if val is not None:
-                    self.feedback_text = str(val).strip()
-                self._complete_feedback_submission()
-
-            if self.webview:
-                self.webview.evaluateJavaScript_completionHandler_(
-                    "document.getElementById('hud-input') ? document.getElementById('hud-input').value : ''",
-                    _on_eval,
-                )
-            else:
-                self._complete_feedback_submission()
+            self.feedback_cancelled = True
+            self._complete_feedback_submission()
 
     def _complete_feedback_submission(self):
         self._stop_feedback_key_monitor()
-        if self.panel:
-            self.panel.setIgnoresMouseEvents_(True)
-            self.panel.resignKeyWindow()
-        self.feedback_event.set()
+        def _cleanup():
+            if self.panel:
+                self.panel.setIgnoresMouseEvents_(True)
+                self.panel.resignKeyWindow()
+            # Immediately hide the visual panel on main thread
+            if self.resident:
+                self._hide_on_main_thread()
+            else:
+                self._close_on_main_thread()
+            self.feedback_event.set()
+        AppHelper.callAfter(_cleanup)
 
     def _handle_add_context_clicked(self):
         win_num = self.panel.windowNumber() if self.panel else None
@@ -471,19 +571,23 @@ class MacroHUD:
             except Exception:
                 pass
 
-    def _handle_send_clicked(self):
-        self.prompt_cancelled = False
-        self._restore_execution_mode_on_main_thread()
-        self._refresh_display()
-        self.prompt_event.set()
-
     def _handle_cancel_clicked(self):
+        self._stop_speech_listening()
+        self._stop_prompt_key_monitor()
         self.prompt_cancelled = True
         self._restore_execution_mode_on_main_thread()
         if self.resident:
             self._hide_on_main_thread()
         else:
             self._close_on_main_thread()
+        self.prompt_event.set()
+
+    def _handle_send_clicked(self):
+        self._stop_speech_listening()
+        self._stop_prompt_key_monitor()
+        self.prompt_cancelled = False
+        self._restore_execution_mode_on_main_thread()
+        self._refresh_display()
         self.prompt_event.set()
 
     def show_for_run(self):
@@ -589,6 +693,8 @@ class MacroHUD:
         self._push_js_state()
 
     def _close_on_main_thread(self):
+        self._stop_speech_listening()
+        self._stop_prompt_key_monitor()
         self._stop_feedback_key_monitor()
         if self._refocus_timer:
             try:
@@ -603,6 +709,8 @@ class MacroHUD:
         AppHelper.stopEventLoop()
 
     def _hide_on_main_thread(self):
+        self._stop_speech_listening()
+        self._stop_prompt_key_monitor()
         self._stop_feedback_key_monitor()
         if self._refocus_timer:
             try:

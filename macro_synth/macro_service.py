@@ -49,9 +49,9 @@ def run_macro_once(hud: MacroHUD):
     recorder = ScreenRecorder()
     full_prompt = ""
     llm_xml = ""
-    feedback_text = ""
+    feedback_text: str | None = None  # None = dismissed/unfocused, str = submitted via Enter
     had_error = False
-
+    
     try:
         workspace = NSWorkspace.sharedWorkspace()
         target_app = workspace.frontmostApplication()
@@ -141,7 +141,12 @@ def run_macro_once(hud: MacroHUD):
 
         # STATE 4: Switch HUD to feedback input if not aborted
         if not abort_event.is_set():
-            feedback_text = hud.wait_for_feedback()
+            feedback_res = hud.wait_for_feedback()
+            if isinstance(feedback_res, tuple):
+                feedback_cancelled, text = feedback_res
+                feedback_text = None if feedback_cancelled else (text or "")
+            else:
+                feedback_text = feedback_res
 
     except Exception as exc:
         had_error = True
@@ -155,11 +160,10 @@ def run_macro_once(hud: MacroHUD):
             if had_error or abort_event.is_set():
                 hud.hide_after_delay(1.5)
             else:
-                # Feedback was just submitted (or run completed cleanly), bounce out immediately
                 hud.hide_instantly()
 
-        # Launch the analyzer independently so it doesn't block the resident service
-        if full_prompt and llm_xml:
+        # Launch the analyzer independently only if user submitted feedback via Enter
+        if feedback_text is not None and full_prompt and llm_xml:
             prompt_path.parent.mkdir(parents=True, exist_ok=True)
             xml_path.parent.mkdir(parents=True, exist_ok=True)
             video_path.parent.mkdir(parents=True, exist_ok=True)

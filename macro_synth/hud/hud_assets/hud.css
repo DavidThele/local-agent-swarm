@@ -359,3 +359,56 @@ html, body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Background Audio Orbit Canvas */
+#audio-dots-canvas {
+  position: absolute;
+  top: -38px;
+  left: -20px;
+  width: 440px;
+  height: 120px;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+#audio-dots-canvas.active {
+  opacity: 1;
+}
+
+/* Ensure Main Bar and Context Stack layer cleanly over the canvas */
+#main-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 400px;
+  height: 44px;
+  background: #202124;
+  border-radius: 22px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px 0 20px;
+  z-index: 3;
+  pointer-events: auto;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.10);
+  transition:
+    transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 0.25s ease;
+}
+
+#context-stack {
+  position: absolute;
+  top: 52px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  z-index: 4;
+  pointer-events: auto;
+  transition:
+    opacity 0.28s ease,
+    transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+}

@@ -12,6 +12,9 @@
     <body>
       <div id="scaler">
         <div id="hud-root" class="hud-hidden">
+          <!-- Audio Particle Orbit Canvas (Z-Index 2: Behind Main Bar, Behind Stack) -->
+          <canvas id="audio-dots-canvas" width="440" height="120"></canvas>
+
           <!-- State 3 Pop-out Semi-Circular Wheel -->
           <div id="wheel-wrapper">
             <div id="wheel-bg"></div>
@@ -42,7 +45,7 @@
             </div>
           </div>
     
-          <!-- State 1 Context Pills Stack -->
+          <!-- State 1 Context Pills Stack (Z-Index 4) -->
           <div id="context-stack"></div>
         </div>
       </div>

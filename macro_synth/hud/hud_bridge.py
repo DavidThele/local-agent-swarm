@@ -4,7 +4,6 @@ from AppKit import NSPanel
 from Foundation import NSObject
 from infrastructure.debugging import debug_print
 
-
 class InteractiveHUDPanel(NSPanel):
     """
     Borderless NSPanel that can accept key input and mouse clicks when focused
@@ -20,8 +19,8 @@ class InteractiveHUDPanel(NSPanel):
     def resignKeyWindow(self):
         objc.super(InteractiveHUDPanel, self).resignKeyWindow()
         if hasattr(self, "hud_ref") and self.hud_ref:
-            self.hud_ref._on_panel_resigned_key()
-
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(self.hud_ref._on_panel_resigned_key)
 
 class HUDScriptMessageHandler(NSObject):
     """Bridges JavaScript events from WKWebView back into Python."""
