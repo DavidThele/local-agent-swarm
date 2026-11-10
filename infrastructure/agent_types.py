@@ -43,6 +43,8 @@ class AgentType(str, Enum):
                 "wait_for_agents",
                 "question",
                 "mark_done",
+                "chrome",           
+                "wait_for_user",    
             ),
             AgentType.SUB_ORCHESTRATOR: (
                 "spawn_agent",
@@ -55,6 +57,8 @@ class AgentType(str, Enum):
                 "read_file",
                 "list_directory",
                 "mark_done",
+                "chrome",           
+                "wait_for_user",    
             ),
         }[self]
 

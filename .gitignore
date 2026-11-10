@@ -38,3 +38,5 @@ launchd/*.plist
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+chrome_profile/
