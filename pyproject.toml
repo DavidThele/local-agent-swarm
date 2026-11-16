@@ -5,9 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agents-core"
 version = "0.1.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
-	"chromadb",
+	"chromadb>=1.0.0",
 	"google-genai",
+	"pillow>=13.0.0",
+	"playwright>=1.65.2",
+	"pynput>=1.8.2",
+	"pyobjc-core>=13.0",
+	"pyobjc-framework-applicationservices>=13.0",
+	"pyobjc-framework-cocoa>=13.0",
+	"pyobjc-framework-quartz>=13.0",
+	"pyobjc-framework-webkit>=13.0",
+	"python-dotenv>=1.2.4",
 ]
 
 [tool.setuptools.packages.find]

@@ -1,7 +1,8 @@
 import sys
 from pathlib import Path
 from datetime import datetime
-from infrastructure.prompt_router import send_prompt, GEMINI_3_8_FLASH
+from infrastructure.prompt_router import send_prompt
+from infrastructure.models import GEMINI_3_8_FLASH
 from infrastructure.parser import parse_llm_output
 from infrastructure.debugging import debug_print
 from pipelines.performance_analyzer import snapshot_prompt_history

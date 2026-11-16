@@ -6,7 +6,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 from infrastructure.debugging import debug_print
-from models import (  # noqa: F401 - re-exported for callers importing constants from here
+from infrastructure.models import (  # noqa: F401 - re-exported for callers importing constants from here
     GEMINI_3_1_FLASH_LITE,
     get_resolved_pricing,
 )

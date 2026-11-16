@@ -29,6 +29,8 @@ AGENTS.md
 *.pem
 *.p12
 *.pfx
+.venv
+*.egg-info/
 
 # Local runtime output and IPC state
 *.log

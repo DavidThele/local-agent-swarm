@@ -5,7 +5,7 @@ from infrastructure.workspace import create_chat_instance
 from infrastructure.agent_loop import run_agent
 from infrastructure.agent_types import AgentType
 from infrastructure.debugging import debug_print
-from pipelines.performance_analyzer import analyze_session
+from pipelines.swarm_analyzer import analyze_session
 
 def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool = True) -> dict:
     """
