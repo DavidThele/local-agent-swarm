@@ -5,24 +5,26 @@ semantic memory backed by ChromaDB.
 
 ## Install
 
-Use Python 3.10 or newer:
+Requires Python 3.11–3.13 (managed automatically via [`uv`](https://docs.astral.sh/uv/)):
 
 ```bash
-python3 -m pip install -e .
+uv sync
 ```
 
-The project installs its runtime dependencies from `pyproject.toml`, including
-`chromadb` and `google-genai`.
+This creates a local `.venv`, installs the project in editable mode, and syncs
+all runtime dependencies locked in `uv.lock` and `pyproject.toml` (including
+`chromadb`, `google-genai`, `playwright`, and PyObjC frameworks).
 
 Configure Google GenAI credentials using the environment-variable format
-supported by the installed Google GenAI SDK before starting a session.
+supported by the installed Google GenAI SDK (or a local `.env` file) before
+starting a session.
 
 ## Start A Swarm Session
 
 Run the CLI from the project directory:
 
 ```bash
-python3 swarm_cli.py
+uv run swarm_cli.py
 ```
 
 The CLI prompts first for the task and then asks whether to run the performance
@@ -35,19 +37,19 @@ for approval; directory listings outside it are denied.
 ## Storage
 
 - Global prompts, command schemas, configuration, and chat links live under
-	`~/.agents`.
+  `~/.agents`.
 - The persistent semantic database and ingestion state use `~/.agents/db` by
-	default. Existing database contents are preserved.
+  default. Existing database contents are preserved.
 - Set `AGENTS_DB_DIR` to use another database and state directory.
 - Set `AGENTS_LOG_DIR` to select the telemetry directory. Without it, logs are
-	read from `./moniter_data` relative to the process working directory.
+  read from `./moniter_data` relative to the process working directory.
 
 Example:
 
 ```bash
 AGENTS_DB_DIR="$HOME/.agents/db" \
 AGENTS_LOG_DIR="$HOME/path/to/moniter_data" \
-python3 -m pipelines.log_ingestor_wrapper
+uv run -m pipelines.log_ingestor_wrapper
 ```
 
 The ingestion wrapper skips the current date and processes prior
@@ -55,18 +57,19 @@ The ingestion wrapper skips the current date and processes prior
 
 ## Resident Macro Service
 
-The macro synthesizer runs as a resident macOS LaunchAgent so PyObjC, Quartz,
-the prompt router, and the HUD are loaded once. The installed service listens
-on a per-user Unix socket. Trigger a run with:
+The macro synthesizer runs as a resident macOS LaunchAgent using the project's
+`.venv/bin/python` interpreter so PyObjC, Quartz, the prompt router, and the
+HUD are loaded once. The installed service listens on a per-user Unix socket.
+Trigger a run with:
 
 ```bash
-python3 -m macro_synth.macro_trigger
+uv run -m macro_synth.macro_trigger
 ```
 
 The compatibility command also triggers the resident service:
 
 ```bash
-python3 macro_synth/macro_executor.py
+uv run macro_synth/macro_executor.py
 ```
 
 The LaunchAgent definition is kept at
