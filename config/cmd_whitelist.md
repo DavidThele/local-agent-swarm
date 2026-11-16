@@ -15,3 +15,16 @@ stat
 diff
 less
 open
+mkdir
+top
+htop
+df
+du
+free
+ps
+uname
+ping
+traceroute
+dig
+nslookup
+ifconfig

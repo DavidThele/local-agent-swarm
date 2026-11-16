@@ -14,9 +14,11 @@ moniter_data/*
 moniter_data
 logs/*
 !logs/.gitkeep
+!launchd/.gitkeep
 prompts/agents_prompt_history
 AGENTS.md
 chats/*
+!chats/.gitkeep
 
 # Credentials and private local configuration
 .env
@@ -32,6 +34,7 @@ chats/*
 *.pfx
 .venv
 *.egg-info/
+.agents_core.egg-info/
 
 # Local runtime output and IPC state
 *.log

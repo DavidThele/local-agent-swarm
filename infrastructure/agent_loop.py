@@ -1,6 +1,7 @@
 import importlib
 import json
 import queue
+import threading
 from datetime import datetime
 from pathlib import Path
 from infrastructure.prompt_router import send_prompt
@@ -80,6 +81,61 @@ def save_agent_trace(
     with open(trace_file, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
+def save_global_trace(chat_context_state: dict, final_status: str = "success"):
+    """
+    Scans all agent trace files (*_trace.json) in chat_dir and compiles 
+    a consolidated global trace including all main and sub-agents.
+    """
+    chat_dir = Path(chat_context_state.get("local_chat_dir", ".agents/chats/default"))
+    if not chat_dir.exists():
+        return
+
+    all_events = []
+    total_cost = 0.0
+    total_iters = 0
+    overall_status = final_status
+
+    # Find all individual agent trace files in the directory
+    trace_files = list(chat_dir.glob("*_trace.json"))
+    
+    for trace_file in sorted(trace_files):
+        if trace_file.name == "global_trace.json":
+            continue
+        try:
+            with open(trace_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                
+            total_cost += data.get("total_cost_usd", 0.0)
+            total_iters += data.get("iterations_used", 0)
+            
+            if data.get("status") == "failed":
+                overall_status = "failed"
+                
+            agent_id = data.get("agent_id", "unknown")
+            instructions = data.get("instructions", "")
+            
+            for event in data.get("events", []):
+                event_copy = dict(event)
+                if "agent_id" not in event_copy:
+                    event_copy["agent_id"] = agent_id
+                if "instructions" not in event_copy:
+                    event_copy["instructions"] = instructions
+                all_events.append(event_copy)
+        except Exception as e:
+            print(f"[Warning] Failed to read trace file {trace_file.name}: {e}")
+
+    global_payload = {
+        "timestamp": datetime.now().isoformat(),
+        "status": overall_status,
+        "total_iters": total_iters,
+        "total_cost_usd": round(total_cost, 6),
+        "events": all_events
+    }
+
+    global_trace_file = chat_dir / "global_trace.json"
+    with open(global_trace_file, "w", encoding="utf-8") as f:
+        json.dump(global_payload, f, indent=2)
+
 def drain_child_notifications(chat_context_state: dict, block_mode: str | None = None) -> str:
     """
     Drains any completed child agent results from the parent's notification_queue.
@@ -104,7 +160,6 @@ def drain_child_notifications(chat_context_state: dict, block_mode: str | None =
             active_children.pop(child_id, None)
             messages.append(msg)
 
-    # Always drain any remaining notifications that finished simultaneously
     while not notif_queue.empty():
         try:
             child_id, msg = notif_queue.get_nowait()
@@ -135,6 +190,7 @@ def run_agent(
         chat_context_state["notification_queue"] = queue.Queue()
     if "active_children" not in chat_context_state:
         chat_context_state["active_children"] = {}
+    
     chat_context_state.setdefault("workspace_root", str(Path.cwd().resolve()))
 
     system_prompt = load_prompt(agent_type)
@@ -152,24 +208,27 @@ def run_agent(
     cumulative_cost = 0.0
 
     for iteration in range(MAX_WORKER_ITERATIONS):
-        # 0. Non-blocking check if any background child agents finished before sending prompt
         async_updates = drain_child_notifications(chat_context_state, block_mode=None)
         if async_updates:
             current_prompt += f"\n{async_updates}"
 
         print(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{MAX_WORKER_ITERATIONS} - Thinking...")
 
-        # 1. Get LLM Output
         llm_output, chat_history, cost = send_prompt(
             prompt_text=current_prompt,
             model=model_to_use,
             chat_history=chat_history,
             google_search=True,
         )
+        
+        turn_cost = 0.0
         if isinstance(cost, dict):
-            cumulative_cost += cost.get("total_cost", 0.0)
+            turn_cost = cost.get("total_cost", 0.0)
+        elif isinstance(cost, (int, float)):
+            turn_cost = float(cost)
+            
+        cumulative_cost += turn_cost
 
-        # 2. Parse Commands
         commands = parse_llm_output(llm_output)
 
         if not commands:
@@ -177,6 +236,7 @@ def run_agent(
                 current_prompt = drain_child_notifications(chat_context_state, block_mode="any")
                 continue
             current_prompt = "[System Error] No valid XML commands found in your last output. You must use a command or <MarkDone>."
+            
             trace_events.append({
                 "iteration": iteration + 1,
                 "llm_output": llm_output,
@@ -184,7 +244,6 @@ def run_agent(
             })
             continue
 
-        # 3. Execute Commands
         results_string = "\n[System Environment Results]\n"
         is_done = False
         final_result = None
@@ -230,20 +289,22 @@ def run_agent(
             except Exception as e:
                 results_string += f"[Error] Failed to execute <{cmd.command}>: {str(e)}\n"
 
+        trace_events.append({
+            "iteration": iteration + 1,
+            "llm_output": llm_output,
+            "environment_results": final_result if is_done else results_string.strip()
+        })
+
         if is_done:
-            trace_events.append({
-                "iteration": iteration + 1,
-                "llm_output": llm_output,
-                "environment_results": final_result
-            })
             save_agent_trace(
                 chat_context_state, agent_id, agent_type, instructions,
                 dod, "success", iteration + 1, cumulative_cost, trace_events
             )
+            # Re-compile global trace from all completed agent trace files on disk
+            save_global_trace(chat_context_state, final_status="success")
             print(f"[{agent_type.value}:{agent_id}] Task Completed Successfully.")
             return {"status": "success", "result": final_result}
 
-        # 4. If the agent requested <WaitForAgents />, block here until child notifications arrive
         if wait_mode:
             if chat_context_state["active_children"]:
                 wait_updates = drain_child_notifications(chat_context_state, block_mode=wait_mode)
@@ -251,16 +312,12 @@ def run_agent(
             else:
                 results_string += "\n[System] <WaitForAgents> called, but no active child agents are running.\n"
 
-        trace_events.append({
-            "iteration": iteration + 1,
-            "llm_output": llm_output,
-            "environment_results": results_string.strip()
-        })
         current_prompt = results_string
 
     save_agent_trace(
         chat_context_state, agent_id, agent_type, instructions,
         dod, "failed", MAX_WORKER_ITERATIONS, cumulative_cost, trace_events
     )
+    save_global_trace(chat_context_state, final_status="failed")
     print(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_WORKER_ITERATIONS}). Terminating loop.")
     return {"status": "failed", "result": "[System Error] Agent hit the maximum iteration limit without completing the DoD."}
