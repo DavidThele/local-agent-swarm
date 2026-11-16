@@ -6,7 +6,8 @@ from google.genai import types
 
 from infrastructure.debugging import debug_print
 from infrastructure.parser import parse_llm_output
-from infrastructure.prompt_router import send_prompt, GEMINI_3_8_FLASH
+from infrastructure.prompt_router import send_prompt
+from infrastructure.models import GEMINI_3_8_FLASH
 from pipelines.performance_analyzer import snapshot_prompt_history
 
 from .runtime import LOGS_DIR, GLOBAL_ROOT, REPO_ROOT
