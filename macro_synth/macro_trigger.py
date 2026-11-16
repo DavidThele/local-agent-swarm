@@ -4,6 +4,8 @@ import os
 import socket
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv() 
 
 
 SOCKET_PATH = Path(

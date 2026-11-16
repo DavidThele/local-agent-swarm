@@ -1,4 +1,7 @@
 """Resident macro service and Unix-socket trigger."""
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 import socket
 import subprocess
@@ -29,7 +32,6 @@ from .runtime import (
     SOCKET_PATH,
     abort_event,
 )
-
 
 def load_macro_instructions() -> str:
     global_path = GLOBAL_ROOT / "prompts" / "macro_instructions.md"

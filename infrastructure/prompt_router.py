@@ -1,27 +1,22 @@
+import os
 import sys
 import time
+
 from google import genai
-from google.genai.errors import APIError
-from google.genai.types import HttpOptions
 from google.genai import types
+from google.genai.errors import APIError
 from infrastructure.debugging import debug_print
+from models import (  # noqa: F401 - re-exported for callers importing constants from here
+    GEMINI_3_1_FLASH_LITE,
+    get_resolved_pricing,
+)
 
-GEMINI_4_ARGON = "gemini-4-argon"
-GEMINI_3_1_PRO = "gemini-3.1-pro-preview"
-GEMINI_3_8_FLASH = "gemini-3.8-flash"
-GEMINI_3_5_FLASH_LITE = "gemini-3.5-flash-lite"
-GEMINI_3_1_FLASH_LITE = "gemini-3.1-flash-lite"
+# Resolve active pricing table at import time
+pricing = get_resolved_pricing()
 
-discount = 0.5
-discounted_models = [GEMINI_3_8_FLASH, GEMINI_4_ARGON]
+project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
-pricing = {
-    GEMINI_4_ARGON: {"input": 4, "output": 20, "thinking": 20},
-    GEMINI_3_1_PRO: {"input": 2.00, "output": 4.00, "thinking": 4.00},
-    GEMINI_3_8_FLASH: {"input": 1.50, "output": 7.50, "thinking": 7.50},
-    GEMINI_3_5_FLASH_LITE: {"input": 0.30, "output": 2.50, "thinking": 2.50},
-    GEMINI_3_1_FLASH_LITE: {"input": 0.25, "output": 1.50, "thinking": 1.50},
-}
+client = genai.Client(vertexai=True, project=project, location="global")
 
 def send_prompt(
     prompt_text,
@@ -35,19 +30,17 @@ def send_prompt(
     if chat_history is None:
         chat_history = []
 
-    client = genai.Client(http_options=HttpOptions(api_version="v1"))
     prompt_parts = []
-    
-    # Allow passing pre-uploaded files (like the screen recording video)
+
+    # Allow passing pre-uploaded files (like screen recording videos)
     if media_files:
-        for mf in media_files:
-            prompt_parts.append(mf)
-            
-    prompt_parts.append(types.Part(text=prompt_text))
-    
+        prompt_parts.extend(media_files)
+
+    prompt_parts.append(types.Part.from_text(text=prompt_text))
+
     if isinstance(image_data, list):
         for label, image_bytes in image_data:
-            prompt_parts.append(types.Part(text=f"Screenshot of {label}:"))
+            prompt_parts.append(types.Part.from_text(text=f"Screenshot of {label}:"))
             prompt_parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/png"))
     elif image_data:
         prompt_parts.append(types.Part.from_bytes(data=image_data, mime_type="image/png"))
@@ -63,7 +56,7 @@ def send_prompt(
 
     for attempt, delay in enumerate(delays, start=1):
         try:
-            print(f"DEBUG: Calling generate_content with model = {repr(model)}")
+            debug_print(f"Calling generate_content with model = {repr(model)}", "debug")
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
@@ -72,13 +65,16 @@ def send_prompt(
             break
         except APIError as e:
             if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                debug_print(f"[Router] 429 RESOURCE_EXHAUSTED encountered on attempt {attempt}/3. Sleeping for {delay}s...", "warning")
+                debug_print(
+                    f"[Router] 429 RESOURCE_EXHAUSTED encountered on attempt {attempt}/3. Sleeping for {delay}s...",
+                    "warning",
+                )
                 time.sleep(delay)
             else:
-                raise e
+                raise
     else:
         try:
-            print(f"DEBUG: Calling generate_content with model = {repr(model)}")
+            debug_print(f"Final retry calling generate_content with model = {repr(model)}", "debug")
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
@@ -88,28 +84,18 @@ def send_prompt(
             if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
                 debug_print("[Router] Exceeded retry attempts (10s, 20s, 30s). Quitting execution.", "error")
                 sys.exit(1)
-            raise e
+            raise
 
     usage = response.usage_metadata
-    input_tokens = usage.prompt_token_count or 0
-    output_tokens = usage.candidates_token_count or 0
-    thinking_tokens = getattr(usage, "thoughts_token_count", 0) or 0
+    input_tokens = (usage.prompt_token_count or 0) if usage else 0
+    output_tokens = (usage.candidates_token_count or 0) if usage else 0
+    thinking_tokens = (getattr(usage, "thoughts_token_count", 0) or 0) if usage else 0
 
-
-    input_tokens = usage.prompt_token_count or 0
-    output_tokens = usage.candidates_token_count or 0
-    thinking_tokens = getattr(usage, "thoughts_token_count", 0) or 0
-
-    input_cost = input_tokens / 1e6 * pricing[model]['input']
-    output_cost = output_tokens / 1e6 * pricing[model]['output']
-    thinking_cost = thinking_tokens / 1e6 * pricing[model]['thinking']
+    model_rates = pricing.get(model, {"input": 0.0, "output": 0.0, "thinking": 0.0})
+    input_cost = (input_tokens / 1e6) * model_rates["input"]
+    output_cost = (output_tokens / 1e6) * model_rates["output"]
+    thinking_cost = (thinking_tokens / 1e6) * model_rates["thinking"]
     total_cost = input_cost + output_cost + thinking_cost
-
-    if model in discounted_models:
-        input_cost *= discount
-        output_cost *= discount
-        thinking_cost *= discount
-        total_cost *= discount
 
     cost = {
         "input_cost": input_cost,
@@ -133,16 +119,17 @@ def send_prompt(
         elif total_cost > 0.01:
             debug_print(f"[Router] Cost notice: ${total_cost:.6f} exceeds $0.01 threshold.", "warning")
 
-    chat_history.append(
-        types.Content(
-            role="model",
-            parts=[types.Part.from_text(text=response.text)],
-        )
-    )
-
     if response.text is None:
         debug_print("[Router] Warning: Received empty response from model.", "warning")
         response_text = ""
-    else:   
+    else:
         response_text = response.text
+
+    chat_history.append(
+        types.Content(
+            role="model",
+            parts=[types.Part.from_text(text=response_text)],
+        )
+    )
+
     return response_text, chat_history, cost

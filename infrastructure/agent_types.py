@@ -1,6 +1,6 @@
 from enum import Enum
 
-from infrastructure.prompt_router import GEMINI_3_1_FLASH_LITE, GEMINI_3_8_FLASH
+from infrastructure.models import GEMINI_3_1_FLASH_LITE, GEMINI_3_8_FLASH
 
 
 class AgentType(str, Enum):
