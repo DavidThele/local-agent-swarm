@@ -1,7 +1,6 @@
 import importlib
 import json
 import queue
-import threading
 from datetime import datetime
 from pathlib import Path
 from infrastructure.logging import log
@@ -213,7 +212,49 @@ def run_agent(
     model_to_use = agent_type.model
     chat_history = []
     trace_events = []
+    past_events = []
     cumulative_cost = 0.0
+    past_iterations = 0
+
+    # -------------------------------------------------------------------------
+    # RESUME HISTORY LOGIC
+    # -------------------------------------------------------------------------
+    chat_dir = Path(chat_context_state.get("local_chat_dir", ""))
+    trace_file = chat_dir / f"{agent_id}_trace.json"
+
+    if trace_file.exists():
+        try:
+            with open(trace_file, "r", encoding="utf-8") as f:
+                past_data = json.load(f)
+            
+            try:
+                # Import dynamically to ensure the dependency is available
+                from google.genai import types
+                
+                past_instructions = past_data.get("instructions", "")
+                past_dod = past_data.get("dod", "")
+                past_events = past_data.get("events", [])
+                cumulative_cost = past_data.get("total_cost_usd", 0.0)
+                past_iterations = past_data.get("iterations_used", 0)
+                
+                # Create a mock initial prompt so the LLM understands the first response in the history
+                first_user_text = f"[Archived System Prompt Elided]\n=== PAST ASSIGNMENT ===\n<Instructions>{past_instructions}</Instructions>\n<DoD>{past_dod}</DoD>"
+                
+                # Reconstruct the GenAI Chat History array
+                for i, ev in enumerate(past_events):
+                    user_text = first_user_text if i == 0 else past_events[i-1].get("environment_results", "[No Results]")
+                    chat_history.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+                    chat_history.append(types.Content(role="model", parts=[types.Part.from_text(text=ev.get("llm_output", ""))]))
+                    
+                if past_events:
+                    log(f"[Swarm] Resumed session with {len(past_events)} past turns for {agent_id}.", "system")
+                    
+            except ImportError:
+                log("[Swarm] Could not import google.genai.types to reconstruct history.", "warning")
+        except Exception as e:
+            log(f"[Swarm] Failed to load past chat history: {e}", "warning")
+
+    # -------------------------------------------------------------------------
 
     for iteration in range(MAX_WORKER_ITERATIONS):
         async_updates = drain_child_notifications(chat_context_state, block_mode=None)
@@ -306,7 +347,7 @@ def run_agent(
         if is_done:
             save_agent_trace(
                 chat_context_state, agent_id, agent_type, instructions,
-                dod, "success", iteration + 1, cumulative_cost, trace_events
+                dod, "success", past_iterations + iteration + 1, cumulative_cost, past_events + trace_events
             )
             # Re-compile global trace from all completed agent trace files on disk
             save_global_trace(chat_context_state, final_status="success")
@@ -324,7 +365,7 @@ def run_agent(
 
     save_agent_trace(
         chat_context_state, agent_id, agent_type, instructions,
-        dod, "failed", MAX_WORKER_ITERATIONS, cumulative_cost, trace_events
+        dod, "failed", past_iterations + MAX_WORKER_ITERATIONS, cumulative_cost, past_events + trace_events
     )
     save_global_trace(chat_context_state, final_status="failed")
     log(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_WORKER_ITERATIONS}). Terminating loop.", "error")

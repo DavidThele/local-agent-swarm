@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 from datetime import datetime
-from infrastructure.logging import debug_print
+from infrastructure.logging import log
 
 GLOBAL_ROOT = Path.home() / ".agents"
 HISTORY_DIR = GLOBAL_ROOT / "prompts" / "agents_prompt_history"
@@ -19,4 +19,4 @@ def snapshot_prompt_history(current_content: str, summary_msg: str, prefix: str 
     
     snapshot_path = HISTORY_DIR / filename
     snapshot_path.write_text(current_content, encoding="utf-8")
-    debug_print(f"[Analyzer] Saved prompt history snapshot: {snapshot_path}", "system")
+    log(f"[Analyzer] Saved prompt history snapshot: {snapshot_path}", "system")
