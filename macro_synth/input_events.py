@@ -38,6 +38,15 @@ KEYCODE_MAP = {
     "left": 0x7B, "right": 0x7C, "down": 0x7D, "up": 0x7E,
     "f1": 0x7A, "f2": 0x78, "f3": 0x63, "f4": 0x76, "f5": 0x60, "f6": 0x61,
 }
+MODIFIER_KEYCODES = {
+    "cmd": 0x37,
+    "command": 0x37,
+    "shift": 0x38,
+    "alt": 0x3A,
+    "option": 0x3A,
+    "ctrl": 0x3B,
+    "control": 0x3B,
+}
 
 MODIFIER_FLAGS = {
     "cmd": Quartz.kCGEventFlagMaskCommand,
@@ -161,21 +170,25 @@ def press_single_key(key_name: str, count: int = 1):
 
 def _post_tagged_key_event(keycode, key_down, flags=0):
     event = Quartz.CGEventCreateKeyboardEvent(None, keycode, key_down)
-    if flags:
-        Quartz.CGEventSetFlags(event, flags)
+    # ALWAYS set flags explicitly—even when 0—so macOS doesn't inherit stale HID modifier state
+    Quartz.CGEventSetFlags(event, flags)
     Quartz.CGEventSetIntegerValueField(event, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
     return _post_synthetic_event(event, allow_after_abort=not key_down)
-
 
 def press_key_combo(combo_str: str):
     if not isinstance(combo_str, str):
         debug_print(f"[MacroSynth] Invalid combo string format: {combo_str}", "warning")
         return
+
     flags = 0
+    modifiers = []
     main_key = None
+
     for part in (piece.strip().lower() for piece in combo_str.split("+") if piece.strip()):
         if part in MODIFIER_FLAGS:
             flags |= MODIFIER_FLAGS[part]
+            if part not in modifiers:
+                modifiers.append(part)
         elif part in KEYCODE_MAP:
             main_key = part
         else:
@@ -186,13 +199,30 @@ def press_key_combo(combo_str: str):
         return
     if abort_event.is_set():
         return
+
+    # 1. Press modifiers down with cumulative flags
+    active_flags = 0
+    for mod in modifiers:
+        active_flags |= MODIFIER_FLAGS[mod]
+        _post_tagged_key_event(MODIFIER_KEYCODES[mod], True, active_flags)
+
+    # 2. Press and release the main trigger key with full flags
     if not _post_tagged_key_event(KEYCODE_MAP[main_key], True, flags):
         debug_print(f"[MacroSynth] Failed to post key combo '{combo_str}'", "warning")
+        # Ensure any pressed modifiers are released even on failure
+        for mod in reversed(modifiers):
+            _post_tagged_key_event(MODIFIER_KEYCODES[mod], False, 0)
         return
+
     time.sleep(KEY_COMBO_DOWN_TIME_MS / 1000.0)
     _post_tagged_key_event(KEYCODE_MAP[main_key], False, flags)
-    time.sleep(KEY_COMBO_UP_TIME_MS / 1000.0)
 
+    # 3. Release modifiers in reverse order, ending with flags=0 to clear HID state
+    for mod in reversed(modifiers):
+        active_flags &= ~MODIFIER_FLAGS[mod]
+        _post_tagged_key_event(MODIFIER_KEYCODES[mod], False, active_flags)
+
+    time.sleep(KEY_COMBO_UP_TIME_MS / 1000.0)
 
 def type_unicode_string(text: str):
     if not isinstance(text, str):
@@ -205,9 +235,10 @@ def type_unicode_string(text: str):
             press_single_key("enter" if char == "\n" else "tab")
             continue
         for key_down in (True, False):
+            # Inside type_unicode_string:
             event = Quartz.CGEventCreateKeyboardEvent(None, 0, key_down)
+            Quartz.CGEventSetFlags(event, 0)
             Quartz.CGEventKeyboardSetUnicodeString(event, len(char), char)
-            Quartz.CGEventSetIntegerValueField(event, Quartz.kCGEventSourceUserData, SYNTHETIC_EVENT_TAG)
             _post_synthetic_event(event, allow_after_abort=not key_down)
         time.sleep(TYPING_BUFFER_TIME_MS / 1000.0)
 

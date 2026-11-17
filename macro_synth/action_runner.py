@@ -1,12 +1,31 @@
 """Validate and execute synthesized macro actions."""
 
+import os
 import re
 import time
+from datetime import datetime
+from pathlib import Path
 
 from infrastructure.debugging import debug_print
 from command_executors import zsh_exec
 from . import input_events
 from .runtime import ACTION_BUFFER_TIME_MS, abort_event
+
+
+def _create_action_logger():
+    """Create a timestamped log file in /logs/actions/{datetime}.log and return a log helper."""
+    debug_print("[MacroSynth] Creating action log file...", "debug")
+    log_dir = Path.cwd() / "logs" / "actions"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    log_path = log_dir / f"{run_timestamp}.log"
+
+    def log(message: str) -> None:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {message}\n")
+
+    return log
 
 
 def format_action_label(tag: str, attrs: dict, body: str) -> str:
@@ -49,6 +68,8 @@ def unoptimized_action_warnings(action_cmds: list) -> list[str]:
 
 
 def execute_macro_commands(commands: list, hud) -> bool:
+    log_action = _create_action_logger()
+
     analysis = None
     action_cmds = []
     for cmd in commands:
@@ -57,8 +78,11 @@ def execute_macro_commands(commands: list, hud) -> bool:
         else:
             action_cmds.append(cmd)
 
+    log_action(f"Macro execution initialized with {len(action_cmds)} action(s).")
+
     for warning in unoptimized_action_warnings(action_cmds):
         debug_print(f"[MacroSynth] Optimization warning: {warning}", "warning")
+        log_action(f"WARNING: {warning}")
 
     hud_actions = []
     for cmd in action_cmds:
@@ -78,6 +102,7 @@ def execute_macro_commands(commands: list, hud) -> bool:
 
     if not action_cmds:
         hud.update(status_text="No executable actions returned.", wait=True)
+        log_action("Aborted: No executable actions returned.")
         return False
 
     # Allow 250ms for target window focus and HUD transition before step 1
@@ -85,6 +110,7 @@ def execute_macro_commands(commands: list, hud) -> bool:
 
     for index, cmd in enumerate(action_cmds):
         if abort_event.is_set():
+            log_action(f"Macro aborted before step {index + 1}/{len(action_cmds)}.")
             return False
 
         hud_actions[index]["state"] = "active"
@@ -97,23 +123,33 @@ def execute_macro_commands(commands: list, hud) -> bool:
         tag = cmd.command
         attrs = cmd.attributes
         body = cmd.content if isinstance(cmd.content, str) else ""
+        action_desc = format_action_label(tag, attrs, cmd.content)
+        reasoning = attrs.get("reasoning", "No reasoning provided")
 
         # Small lead-in so video capture and user visually align with the step indicator
         time.sleep(0.05)
 
         if tag == "KeyCombo":
             input_events.press_key_combo(body)
+            log_action(f"Step {index + 1}/{len(action_cmds)} [KeyCombo] {body} | Reasoning: {reasoning}")
         elif tag == "KeyPress":
-            input_events.press_single_key(body, count=int(attrs.get("count", 1)))
+            count = int(attrs.get("count", 1))
+            input_events.press_single_key(body, count=count)
+            log_action(f"Step {index + 1}/{len(action_cmds)} [KeyPress] {body} (count={count}) | Reasoning: {reasoning}")
         elif tag == "TypeText":
             input_events.type_unicode_string(body)
+            log_action(f"Step {index + 1}/{len(action_cmds)} [TypeText] {body!r} | Reasoning: {reasoning}")
         elif tag == "MouseClick":
             posted = input_events.click_mouse(
                 float(attrs["x"]), float(attrs["y"]), attrs.get("button", "left"), int(attrs.get("count", 1))
             )
+            status = "posted" if posted else "not posted"
             debug_print(
-                f"[MacroSynth] Mouse event {'posted' if posted else 'not posted'} at ({attrs['x']}, {attrs['y']}).",
+                f"[MacroSynth] Mouse event {status} at ({attrs['x']}, {attrs['y']}).",
                 "debug" if posted else "error",
+            )
+            log_action(
+                f"Step {index + 1}/{len(action_cmds)} [MouseClick] {action_desc} ({status}) | Reasoning: {reasoning}"
             )
         elif tag == "Scroll":
             input_events.scroll_mouse(
@@ -121,22 +157,34 @@ def execute_macro_commands(commands: list, hud) -> bool:
                 float(attrs["x"]) if "x" in attrs else None,
                 float(attrs["y"]) if "y" in attrs else None,
             )
+            log_action(
+                f"Step {index + 1}/{len(action_cmds)} [Scroll] {action_desc} at ({attrs.get('x')}, {attrs.get('y')}) | Reasoning: {reasoning}"
+            )
         elif tag == "Wait":
-            input_events.interruptible_wait(int(attrs.get("ms", 50)))
+            ms = int(attrs.get("ms", 50))
+            input_events.interruptible_wait(ms)
+            log_action(f"Step {index + 1}/{len(action_cmds)} [Wait] {ms}ms | Reasoning: {reasoning}")
         elif tag == "Zsh":
             result = zsh_exec.execute(attrs, cmd.content, {})
             debug_print(f"[MacroSynth] Terminal command result:\n{result}", "data")
+            log_action(
+                f"Step {index + 1}/{len(action_cmds)} [Zsh] {cmd.content!r} | Reasoning: {reasoning} | Result: {result!r}"
+            )
             # If a terminal launch or open command was called, give macOS 250ms to switch
             time.sleep(0.25)
+        else:
+            log_action(f"Step {index + 1}/{len(action_cmds)} [{tag}] attrs={attrs} body={body!r} | Reasoning: {reasoning}")
 
         input_events.interruptible_wait(ACTION_BUFFER_TIME_MS)
 
         if abort_event.is_set():
             hud_actions[index]["state"] = "aborted"
             hud.update(actions=hud_actions, wait=True)
+            log_action(f"Step {index + 1}/{len(action_cmds)} aborted during post-action buffer.")
             return False
 
         hud_actions[index]["state"] = "done"
         hud.update(actions=hud_actions, wait=True)
 
+    log_action("Macro execution completed successfully.")
     return True
