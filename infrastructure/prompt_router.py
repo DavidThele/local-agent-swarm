@@ -18,6 +18,7 @@ project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
 client = genai.Client(vertexai=True, project=project, location="global")
 
+
 def send_prompt(
     prompt_text,
     model=GEMINI_3_1_FLASH_LITE,
@@ -50,9 +51,11 @@ def send_prompt(
     delays = [10, 20, 30]
     response = None
 
-    config_args = {}
+    config: types.GenerateContentConfig | None = None
     if google_search:
-        config_args["tools"] = [{"google_search": {}}]
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
 
     for attempt, delay in enumerate(delays, start=1):
         try:
@@ -60,7 +63,7 @@ def send_prompt(
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
-                config=config_args,
+                config=config,
             )
             break
         except APIError as e:
@@ -78,7 +81,7 @@ def send_prompt(
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
-                config=config_args,
+                config=config,
             )
         except APIError as e:
             if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):

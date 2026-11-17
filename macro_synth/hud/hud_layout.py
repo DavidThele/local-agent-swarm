@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import threading
 import time
+from typing import Any
+
 from AppKit import (
     NSApplication,
     NSApplicationActivateAllWindows,
@@ -12,21 +14,27 @@ from AppKit import (
     NSEvent,
     NSFloatingWindowLevel,
     NSMakeRect,
+    NSNotificationCenter,
     NSRunningApplication,
     NSScreen,
-    NSWorkspace,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowDidResignKeyNotification,
     NSWindowStyleMaskBorderless,
-    NSNotificationCenter,
-    NSWindowDidResignKeyNotification
+    NSWorkspace,
 )
+from PyObjCTools import AppHelper
 import Quartz
 import WebKit
-from PyObjCTools import AppHelper
+
 from infrastructure.debugging import debug_print
 from ..context_capture import capture_screen_context_exclude_hud
 from ..speech_engine import NativeSpeechEngine
+from .hud_bridge import (
+    HUDDispatcher,
+    HUDScriptMessageHandler,
+    InteractiveHUDPanel,
+)
 from .hud_config import (
     BASE_CANVAS_HEIGHT,
     BASE_CANVAS_WIDTH,
@@ -37,11 +45,7 @@ from .hud_config import (
     HUD_SCALE,
     get_window_title_for_pid,
 )
-from .hud_bridge import (
-    HUDDispatcher,
-    HUDScriptMessageHandler,
-    InteractiveHUDPanel,
-)
+
 
 def _load_hud_html(scale: float) -> str:
     """Reads and assembles hud.html, hud.css, and hud.js from the hud_assets directory."""
@@ -74,30 +78,30 @@ class MacroHUD:
         self.pos_y = pos_y
         self.resident = resident
 
-        self.panel = None
-        self.webview = None
-        self.script_handler = None
-        self.feedback_monitor = None
-        self.feedback_global_monitor = None
-        self.prompt_key_monitor = None
-        self._refocus_timer = None
+        self.panel: Any = None
+        self.webview: Any = None
+        self.script_handler: Any = None
+        self.feedback_monitor: Any = None
+        self.feedback_global_monitor: Any = None
+        self.prompt_key_monitor: Any = None
+        self._refocus_timer: threading.Timer | None = None
 
         # Native Speech Recognition Engine
-        self.speech_engine = None
+        self.speech_engine: NativeSpeechEngine | None = None
 
-        self.dispatcher = HUDDispatcher.alloc().initWithHUD_(self)
+        self.dispatcher: Any = HUDDispatcher.alloc().initWithHUD_(self)
 
         self.mode = "hidden" if resident else "loading"
         self.status_text = "Processing..."
-        self.actions = []
-        self.analysis = None
+        self.actions: list[dict[str, Any]] = []
+        self.analysis: dict[str, Any] | None = None
 
         # Synchronization for Interactive Prompt Phase
         self.prompt_event = threading.Event()
         self.prompt_cancelled = False
         self.user_request_text = ""
         self.added_context_pages: list[tuple[str, bytes]] = []
-        self.last_external_app = None
+        self.last_external_app: Any = None
         self.candidate_context_label = ""
 
         # Synchronization for Post-Execution Feedback
@@ -142,8 +146,6 @@ class MacroHUD:
             NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
         # Register notification for window unfocus / resign key
-        nc = NSApplication.sharedApplication().notificationCenter() if hasattr(NSApplication.sharedApplication(), "notificationCenter") else None
-        # Register notification for window unfocus / resign key
         NSNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
             NSWindowDidResignKeyNotification,
             self.panel,
@@ -174,6 +176,7 @@ class MacroHUD:
             on_partial_text=self._on_speech_partial,
             on_audio_levels=self._on_audio_levels,
         )
+
     def _on_speech_partial(self, text: str):
         def _push():
             if self.mode == "prompt" and self.webview:
@@ -201,7 +204,7 @@ class MacroHUD:
             else screen_frame.origin.y + screen_frame.size.height - self.height - HUD_MARGIN_TOP
         )
         return x, y
-    
+
     def set_scale(self, new_scale: float):
         """Dynamically updates the universal scalar and resizes the HUD window accordingly."""
         self.scale = float(new_scale)
@@ -237,7 +240,7 @@ class MacroHUD:
         def _do_refocus():
             if self.mode == "prompt" and self.panel and self.webview:
                 def _main_refocus():
-                    if self.mode == "prompt" and self.panel:
+                    if self.mode == "prompt" and self.panel and self.webview:
                         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
                         self.panel.makeKeyAndOrderFront_(None)
                         self.panel.makeFirstResponder_(self.webview)
@@ -322,7 +325,7 @@ class MacroHUD:
             self._complete_feedback_submission()
         elif msg_type == "dismiss_feedback":
             self._handle_feedback_dismiss()
-            
+
     def wait_for_user_prompt(self, target_app=None) -> tuple[bool, str, list[tuple[str, bytes]]]:
         self.prompt_event.clear()
         self.prompt_cancelled = False
@@ -363,17 +366,19 @@ class MacroHUD:
         self.mode = "prompt"
         self.status_text = "Specify request..."
 
-        self.panel.setIgnoresMouseEvents_(False)
-        self.panel.setAlphaValue_(1.0)
-        self.panel.orderFrontRegardless()
+        if self.panel:
+            self.panel.setIgnoresMouseEvents_(False)
+            self.panel.setAlphaValue_(1.0)
+            self.panel.orderFrontRegardless()
 
         curr_app = NSRunningApplication.currentApplication()
         curr_app.activateWithOptions_(
             NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows
         )
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        self.panel.makeKeyAndOrderFront_(None)
-        self.panel.makeFirstResponder_(self.webview)
+        if self.panel:
+            self.panel.makeKeyAndOrderFront_(None)
+            self.panel.makeFirstResponder_(self.webview)
 
         self._push_js_state(clear_input=True, focus_input=True)
 
@@ -426,17 +431,19 @@ class MacroHUD:
         self.mode = "feedback"
         self.status_text = "Enter feedback..."
 
-        self.panel.setIgnoresMouseEvents_(False)
-        self.panel.setAlphaValue_(1.0)
-        self.panel.orderFrontRegardless()
+        if self.panel:
+            self.panel.setIgnoresMouseEvents_(False)
+            self.panel.setAlphaValue_(1.0)
+            self.panel.orderFrontRegardless()
 
         curr_app = NSRunningApplication.currentApplication()
         curr_app.activateWithOptions_(
             NSApplicationActivateIgnoringOtherApps | NSApplicationActivateAllWindows
         )
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-        self.panel.makeKeyAndOrderFront_(None)
-        self.panel.makeFirstResponder_(self.webview)
+        if self.panel:
+            self.panel.makeKeyAndOrderFront_(None)
+            self.panel.makeFirstResponder_(self.webview)
 
         self._push_js_state(clear_input=True, focus_input=True)
         self._start_feedback_key_monitor()
@@ -522,6 +529,7 @@ class MacroHUD:
 
     def _complete_feedback_submission(self):
         self._stop_feedback_key_monitor()
+
         def _cleanup():
             if self.panel:
                 self.panel.setIgnoresMouseEvents_(True)
@@ -670,7 +678,7 @@ class MacroHUD:
                 }.get(state, "⏳")
                 lines.append(f"{icon} [{idx}] action: {act.get('label', '')}")
                 if "reasoning" in act:
-                    lines.append(f"       reasoning: {act.get('reasoning', '')}")
+                    lines.append(f"        reasoning: {act.get('reasoning', '')}")
 
         lines.append("\n" + "─" * 42 + "\n")
         if self.analysis:

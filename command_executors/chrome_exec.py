@@ -5,14 +5,21 @@ import subprocess
 import urllib.request
 import urllib.error
 from pathlib import Path
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import (
+    sync_playwright,
+    Playwright,
+    Browser,
+    BrowserContext,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+)
 from infrastructure.debugging import debug_print
 
 # Global state to persist the browser connection across agent turns
-_PLAYWRIGHT = None
-_BROWSER = None
-_CONTEXT = None
-_PAGE = None
+_PLAYWRIGHT: Playwright | None = None
+_BROWSER: Browser | None = None
+_CONTEXT: BrowserContext | None = None
+_PAGE: Page | None = None
 
 # Injected JS to clear old markers, find interactive elements, tag them with IDs, and draw overlays
 DOM_SCRIPT = """
@@ -101,10 +108,10 @@ def launch_chrome_if_needed():
             
     raise RuntimeError("Timed out waiting for Chrome to open debugging port 9222.")
 
-def init_browser():
+def init_browser() -> Page:
     global _PLAYWRIGHT, _BROWSER, _CONTEXT, _PAGE
     if _PAGE is not None:
-        return
+        return _PAGE
 
     launch_chrome_if_needed()
 
@@ -114,6 +121,7 @@ def init_browser():
         _BROWSER = _PLAYWRIGHT.chromium.connect_over_cdp("http://localhost:9222")
         _CONTEXT = _BROWSER.contexts[0] if _BROWSER.contexts else _BROWSER.new_context()
         _PAGE = _CONTEXT.pages[0] if _CONTEXT.pages else _CONTEXT.new_page()
+        return _PAGE
     except Exception as e:
         raise RuntimeError(f"Failed to connect to Chrome via Playwright: {e}")
 
@@ -124,9 +132,16 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
     if not action:
         return "[Error] Chrome command requires an 'action' attribute (navigate, click, type, scroll, close)."
         
+    if action == "close":
+        if _BROWSER is not None:
+            _BROWSER.close()
+        if _PLAYWRIGHT is not None:
+            _PLAYWRIGHT.stop()
+        _PLAYWRIGHT, _BROWSER, _CONTEXT, _PAGE = None, None, None, None
+        return "[Success] Chrome session detached."
+
     try:
-        if action != "close":
-            init_browser()
+        page = init_browser()
     except RuntimeError as e:
         return f"[Error] {e}"
 
@@ -135,61 +150,67 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
     try:
         if action == "navigate":
             url = attributes.get("url")
-            if not url: return "[Error] Navigate requires a 'url' attribute."
-            if not url.startswith("http"): url = "https://" + url
-            _PAGE.goto(url, wait_until="domcontentloaded")
-            try: _PAGE.wait_for_load_state("networkidle", timeout=4000)
-            except PlaywrightTimeoutError: pass
+            if not url:
+                return "[Error] Navigate requires a 'url' attribute."
+            if not url.startswith("http"):
+                url = "https://" + url
+            page.goto(url, wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("networkidle", timeout=4000)
+            except PlaywrightTimeoutError:
+                pass
             result_msg = f"Navigated to {url}"
             
         elif action == "click":
             target_id = attributes.get("target_id")
-            if not target_id: return "[Error] Click requires a 'target_id'."
-            locator = _PAGE.locator(f"[data-agent-id='{target_id}']")
-            if locator.count() == 0: return f"[Error] Element ID {target_id} not found."
+            if not target_id:
+                return "[Error] Click requires a 'target_id'."
+            locator = page.locator(f"[data-agent-id='{target_id}']")
+            if locator.count() == 0:
+                return f"[Error] Element ID {target_id} not found."
             locator.first.click()
-            try: _PAGE.wait_for_load_state("networkidle", timeout=3000)
-            except PlaywrightTimeoutError: pass
+            try:
+                page.wait_for_load_state("networkidle", timeout=3000)
+            except PlaywrightTimeoutError:
+                pass
             result_msg = f"Clicked element [{target_id}]"
 
         elif action == "type":
             target_id = attributes.get("target_id")
             if isinstance(content, dict):
                 text = content.get("Text", "")
-                if isinstance(text, list): text = text[0]
+                if isinstance(text, list):
+                    text = text[0]
             else:
                 text = str(content)
                 
-            if not target_id: return "[Error] Type requires a 'target_id'."
-            locator = _PAGE.locator(f"[data-agent-id='{target_id}']")
-            if locator.count() == 0: return f"[Error] Element ID {target_id} not found."
+            if not target_id:
+                return "[Error] Type requires a 'target_id'."
+            locator = page.locator(f"[data-agent-id='{target_id}']")
+            if locator.count() == 0:
+                return f"[Error] Element ID {target_id} not found."
             locator.first.fill(text)
             result_msg = f"Typed text into element [{target_id}]"
             
         elif action == "scroll":
             direction = attributes.get("direction", "down")
-            if direction == "down": _PAGE.mouse.wheel(0, 800)
-            else: _PAGE.mouse.wheel(0, -800)
+            if direction == "down":
+                page.mouse.wheel(0, 800)
+            else:
+                page.mouse.wheel(0, -800)
             time.sleep(0.5)
             result_msg = f"Scrolled {direction}"
-
-        elif action == "close":
-            if _BROWSER:
-                _BROWSER.close()
-                _PLAYWRIGHT.stop()
-                _BROWSER, _CONTEXT, _PAGE = None, None, None
-            return "[Success] Chrome session detached."
             
         else:
             return f"[Error] Unknown action '{action}'"
 
         # Extract ID-based DOM
-        dom_string = _PAGE.evaluate(DOM_SCRIPT)
+        dom_string = page.evaluate(DOM_SCRIPT)
         
         # Save screenshot
         chat_dir = Path(context_state.get("local_chat_dir", ".agents/chats/default"))
         screenshot_path = chat_dir / f"chrome_{int(time.time())}.png"
-        _PAGE.screenshot(path=str(screenshot_path))
+        page.screenshot(path=str(screenshot_path))
         
         return f"[Success] {result_msg}\n\n=== INTERACTIVE DOM ELEMENTS ===\n{dom_string}\n"
 

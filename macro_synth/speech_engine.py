@@ -3,10 +3,11 @@
 import math
 import struct
 import threading
-from typing import Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import objc
-from AppKit import NSRunLoop, NSDefaultRunLoopMode
+from AppKit import NSRunLoop, NSDefaultRunLoopMode  # noqa: F401
+from infrastructure.debugging import debug_print
 
 # Load Frameworks
 objc.loadBundle(
@@ -22,6 +23,13 @@ try:
     )
 except Exception:
     pass
+
+# Declare dynamically injected Objective-C classes for static type checkers
+if TYPE_CHECKING:
+    AVCaptureDevice: Any
+    AVAudioEngine: Any
+    SFSpeechRecognizer: Any
+    SFSpeechAudioBufferRecognitionRequest: Any
 
 # -----------------------------------------------------------------------------
 # PyObjC Block Signature Registration
@@ -113,8 +121,6 @@ try:
 except Exception:
     pass
 
-from infrastructure.debugging import debug_print
-
 
 class NativeSpeechEngine:
     def __init__(
@@ -184,7 +190,7 @@ class NativeSpeechEngine:
 
                 self.recognition_request = SFSpeechAudioBufferRecognitionRequest.alloc().init()
                 self.recognition_request.setShouldReportPartialResults_(True)
-                
+
                 # Force on-device if available to eliminate network delays
                 if hasattr(self.recognition_request, "setRequiresOnDeviceRecognition_"):
                     if self.speech_recognizer.supportsOnDeviceRecognition():
@@ -264,7 +270,7 @@ class NativeSpeechEngine:
             return bands
         except Exception:
             return [0.0] * 8
-        
+
     def stop(self):
         with self._lock:
             if not self._is_running:

@@ -37,3 +37,6 @@ include = [
 commands = ["*.md"]
 prompts = ["*.md"]
 config = ["*.md"]
+
+[tool.pyright]
+reportAttributeAccessIssue = "none"
