@@ -40,3 +40,8 @@ config = ["*.md"]
 
 [tool.pyright]
 reportAttributeAccessIssue = "none"
+
+[dependency-groups]
+dev = [
+    "ipython>=9.18.1",
+]
