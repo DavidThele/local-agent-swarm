@@ -45,4 +45,4 @@ def debug_print(message: object, color: str = "info") -> None:
         except OSError:
             pass
 
-    print(output)
+    # print(output)

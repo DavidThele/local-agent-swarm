@@ -4,6 +4,7 @@ import queue
 import threading
 from datetime import datetime
 from pathlib import Path
+from infrastructure.debugging import debug_print
 from infrastructure.prompt_router import send_prompt
 from infrastructure.parser import parse_llm_output
 from infrastructure.agent_types import AgentType
@@ -123,7 +124,7 @@ def save_global_trace(chat_context_state: dict, final_status: str = "success"):
                     event_copy["instructions"] = instructions
                 all_events.append(event_copy)
         except Exception as e:
-            print(f"[Warning] Failed to read trace file {trace_file.name}: {e}")
+            debug_print(f"[Warning] Failed to read trace file {trace_file.name}: {e}", "warning")
 
     global_payload = {
         "timestamp": datetime.now().isoformat(),
@@ -149,13 +150,13 @@ def drain_child_notifications(chat_context_state: dict, block_mode: str | None =
     messages = []
 
     if block_mode == "any" and active_children and notif_queue.empty():
-        print(f"  [AsyncWait] Waiting for next child agent to finish (Active: {list(active_children.keys())})...")
+        debug_print(f"  [AsyncWait] Waiting for next child agent to finish (Active: {list(active_children.keys())})...", "warning")
         child_id, msg = notif_queue.get(block=True)
         active_children.pop(child_id, None)
         messages.append(msg)
 
     elif block_mode == "all" and active_children:
-        print(f"  [AsyncWait] Waiting for ALL {len(active_children)} child agents to finish...")
+        debug_print(f"  [AsyncWait] Waiting for ALL {len(active_children)} child agents to finish...", "warning")
         while active_children:
             child_id, msg = notif_queue.get(block=True)
             active_children.pop(child_id, None)
@@ -185,7 +186,7 @@ def run_agent(
     The core execution loop for a single agent.
     """
     agent_type = AgentType.parse(agent_type)
-    print(f"\n[Swarm] Booting {agent_type.label} ({agent_id})...")
+    debug_print(f"\n[Swarm] Booting {agent_type.label} ({agent_id})...", "system")
 
     if "notification_queue" not in chat_context_state:
         chat_context_state["notification_queue"] = queue.Queue()
@@ -219,7 +220,7 @@ def run_agent(
         if async_updates:
             current_prompt += f"\n{async_updates}"
 
-        print(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{MAX_WORKER_ITERATIONS} - Thinking...")
+        debug_print(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{MAX_WORKER_ITERATIONS} - Thinking...", "system")
 
         llm_output, chat_history, cost = send_prompt(
             prompt_text=current_prompt,
@@ -257,8 +258,8 @@ def run_agent(
         wait_mode = None
 
         for cmd in commands:
-            print(f"  [{agent_id}] -> Executing <{cmd.command}>...")
-            
+            debug_print(f"  [{agent_id}] -> Executing <{cmd.command}>...", "system")
+
             try:
                 module_name = ''.join(['_'+c.lower() if c.isupper() else c for c in cmd.command]).lstrip('_') + "_exec"
                 allowed_commands = agent_type.commands
@@ -309,7 +310,7 @@ def run_agent(
             )
             # Re-compile global trace from all completed agent trace files on disk
             save_global_trace(chat_context_state, final_status="success")
-            print(f"[{agent_type.value}:{agent_id}] Task Completed Successfully.")
+            debug_print(f"[{agent_type.value}:{agent_id}] Task Completed Successfully.", "success")
             return {"status": "success", "result": final_result}
 
         if wait_mode:
@@ -326,5 +327,5 @@ def run_agent(
         dod, "failed", MAX_WORKER_ITERATIONS, cumulative_cost, trace_events
     )
     save_global_trace(chat_context_state, final_status="failed")
-    print(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_WORKER_ITERATIONS}). Terminating loop.")
+    debug_print(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_WORKER_ITERATIONS}). Terminating loop.", "error")
     return {"status": "failed", "result": "[System Error] Agent hit the maximum iteration limit without completing the DoD."}

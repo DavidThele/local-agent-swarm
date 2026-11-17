@@ -1,4 +1,3 @@
-import sys
 import queue
 from pathlib import Path
 from infrastructure.workspace import create_chat_instance
