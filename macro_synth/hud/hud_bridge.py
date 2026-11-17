@@ -2,7 +2,7 @@ import json
 import objc
 from AppKit import NSPanel
 from Foundation import NSObject
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 class InteractiveHUDPanel(NSPanel):
     """
@@ -41,7 +41,7 @@ class HUDScriptMessageHandler(NSObject):
                 data = dict(body)
             self.hud._handle_js_message(data)
         except Exception as exc:
-            debug_print(f"[HUD] JS message handling error: {exc}", "warning")
+            log(f"[HUD] JS message handling error: {exc}", "warning")
 
 
 class HUDDispatcher(NSObject):

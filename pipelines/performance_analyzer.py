@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 from datetime import datetime
-from infrastructure.debugging import debug_print
+from infrastructure.logging import debug_print
 
 GLOBAL_ROOT = Path.home() / ".agents"
 HISTORY_DIR = GLOBAL_ROOT / "prompts" / "agents_prompt_history"

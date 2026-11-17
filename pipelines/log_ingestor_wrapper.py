@@ -6,7 +6,7 @@ from uuid import UUID
 from pathlib import Path
 from infrastructure.scrubber import scrub_text
 from pipelines.ingestor_pipeline import process_telemetry
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from datetime import date, datetime
 
 # Core Paths
@@ -39,7 +39,7 @@ def backup_database() -> Path:
             continue
         shutil.copytree(entry, backup_path / entry.name)
 
-    debug_print(f"[Wrapper] Database backup created at {backup_path}", "success")
+    log(f"[Wrapper] Database backup created at {backup_path}", "success")
     return backup_path
 
 def load_state() -> dict:
@@ -62,7 +62,7 @@ def process_log_file(date_str: str):
     """
     log_path = LOG_DIR / date_str / "activity.log"
     if not log_path.exists():
-        debug_print(f"[Wrapper] Log file not found: {log_path}", "error")
+        log(f"[Wrapper] Log file not found: {log_path}", "error")
         return
 
     # Count total lines in a fast generator pass without loading into memory
@@ -75,16 +75,16 @@ def process_log_file(date_str: str):
     # Do not create a backup when this log has no unread lines.
     start_line = state.get(log_key, 0)
     if start_line >= total_lines:
-        debug_print(f"[Wrapper] Skipping already processed log: {log_key}", "info")
+        log(f"[Wrapper] Skipping already processed log: {log_key}", "info")
         return
 
     try:
         backup_database()
     except Exception as e:
-        debug_print(f"[Wrapper] Failed to back up database before {log_path}: {e}", "error")
+        log(f"[Wrapper] Failed to back up database before {log_path}: {e}", "error")
         return
 
-    debug_print(f"[Wrapper] Starting ingestion for {log_key} at line {start_line} of {total_lines}", "info")
+    log(f"[Wrapper] Starting ingestion for {log_key} at line {start_line} of {total_lines}", "info")
 
     try:
         with open(log_path, "r", encoding="utf-8") as f:
@@ -109,7 +109,7 @@ def process_log_file(date_str: str):
                 process_chunk(chunk, current_line, total_lines, log_key, state)
                 
     except Exception as e:
-        debug_print(f"[Wrapper] Failed while processing {log_path}: {e}", "error")
+        log(f"[Wrapper] Failed while processing {log_path}: {e}", "error")
 
 
 def process_chunk(chunk: list, current_line: int, total_lines: int, log_key: str, state: dict):
@@ -119,7 +119,7 @@ def process_chunk(chunk: list, current_line: int, total_lines: int, log_key: str
     # 1. Scrub passwords and secrets before LLM exposure
     scrubbed_text = scrub_text(raw_text)
     
-    debug_print(f"\n[Wrapper] Processing lines {current_line - len(chunk)} to {current_line} of {total_lines}...", "info")
+    log(f"\n[Wrapper] Processing lines {current_line - len(chunk)} to {current_line} of {total_lines}...", "info")
     
     # 2. Feed to the two-pass Phase 1/Phase 2 pipeline
     process_telemetry(scrubbed_text)
@@ -127,22 +127,22 @@ def process_chunk(chunk: list, current_line: int, total_lines: int, log_key: str
     # 3. Update persistent state ONLY after successful ingestion
     state[log_key] = current_line
     save_state(state)
-    debug_print(f"[Wrapper] State saved. {log_key} is completed up to line {current_line}/{total_lines}.", "success")
+    log(f"[Wrapper] State saved. {log_key} is completed up to line {current_line}/{total_lines}.", "success")
 
     
 def ingest_all_unprocessed_logs():
     """Iterates through the moniter_data directory to process all dates except today."""
     if not LOG_DIR.exists():
-        debug_print(f"[Wrapper] Log directory does not exist: {LOG_DIR}", "error")
+        log(f"[Wrapper] Log directory does not exist: {LOG_DIR}", "error")
         return
 
     # Adjust the format string if your directories use a different format (e.g. "%Y%m%d")
     today_str = date.today().strftime("%Y-%m-%d")
-    debug_print(f"[Wrapper] Starting ingestion for all unprocessed logs, skipping today's logs ({today_str}).", "info")
+    log(f"[Wrapper] Starting ingestion for all unprocessed logs, skipping today's logs ({today_str}).", "info")
 
     for date_folder in sorted(LOG_DIR.iterdir()):
         if date_folder.is_dir():
-            debug_print(f"[Wrapper] Found log folder: {date_folder.name}", "debug")
+            log(f"[Wrapper] Found log folder: {date_folder.name}", "debug")
             date_str = date_folder.name
             if date_str == today_str:
                 continue

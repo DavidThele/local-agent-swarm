@@ -1,7 +1,7 @@
 import re
 import uuid
 from pathlib import Path
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 def resolve_workspace_path(path: str, workspace_root: str | Path | None = None) -> tuple[Path, Path]:
     root = Path(workspace_root or Path.cwd()).expanduser().resolve()
@@ -118,11 +118,11 @@ def create_chat_instance(chat_id: str = '') -> tuple[str, Path]:
                 
         # Create the symlink pointing the global chat ID to the absolute path of the local chat directory
         global_symlink_path.symlink_to(local_chat_dir.resolve(), target_is_directory=True)
-        debug_print(f"[System] Symlink created: {global_symlink_path} -> {local_chat_dir.resolve()}", "system")
+        log(f"[System] Symlink created: {global_symlink_path} -> {local_chat_dir.resolve()}", "system")
     else:
-        debug_print("[System] Running from home directory. No symlink needed.", "system")
+        log("[System] Running from home directory. No symlink needed.", "system")
     
-    debug_print(f"[System] Local chat instance created: {local_chat_dir.resolve()}", "success")
+    log(f"[System] Local chat instance created: {local_chat_dir.resolve()}", "success")
     return chat_id, local_chat_dir
 
 def sanitize_chat_title(raw_title: str) -> str:
@@ -175,7 +175,7 @@ def rename_chat_instance(current_chat_dir: str | Path, new_title: str) -> tuple[
             new_symlink.unlink()
         new_symlink.symlink_to(new_dir.resolve(), target_is_directory=True)
 
-    debug_print(f"[System] Renamed chat session '{old_id}' -> '{new_slug}'", "success")
+    log(f"[System] Renamed chat session '{old_id}' -> '{new_slug}'", "success")
     return new_slug, new_dir
 
 if __name__ == "__main__":

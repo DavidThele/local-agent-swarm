@@ -2,7 +2,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import List, Dict, Any, Union, Sequence, Tuple
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 # Leaf tags that frequently contain raw code, shell operators (&&, <, >), or nested example tags
 RAW_TEXT_TAGS = (
@@ -188,7 +188,7 @@ def parse_llm_output(text: str) -> List[ParsedCommand]:
             ))
 
         except ET.ParseError as e:
-            debug_print(f"[Parser] Malformed XML block skipped: {e}", "warning")
-            debug_print(f"[Parser] Failed block snippet: {safe_block[:50]}...", "data")
+            log(f"[Parser] Malformed XML block skipped: {e}", "warning")
+            log(f"[Parser] Failed block snippet: {safe_block[:50]}...", "data")
 
     return commands

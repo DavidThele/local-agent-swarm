@@ -1,7 +1,7 @@
 import threading
 from pynput import keyboard, mouse
 
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 input_events = []
 event_lock = threading.Lock()
@@ -51,7 +51,7 @@ def start_listeners():
     return k_listener, m_listener
 
 def stop_listeners(k_listener, m_listener):
-    debug_print("Stopping input listeners...", "info")
+    log("Stopping input listeners...", "info")
     if k_listener and k_listener.is_alive():
         k_listener.stop()
     if m_listener and m_listener.is_alive():
@@ -61,7 +61,7 @@ def stop_listeners(k_listener, m_listener):
         k_listener.join(timeout=1.0)
     if m_listener:
         m_listener.join(timeout=1.0)
-    debug_print("Input listeners stopped.", "info")
+    log("Input listeners stopped.", "info")
 
 def get_and_clear_events():
     """Safely retrieves the current buffer of events and clears the global queue."""

@@ -5,7 +5,7 @@ import time
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from infrastructure.models import (  # noqa: F401 - re-exported for callers importing constants from here
     GEMINI_3_1_FLASH_LITE,
     get_resolved_pricing,
@@ -59,7 +59,7 @@ def send_prompt(
 
     for attempt, delay in enumerate(delays, start=1):
         try:
-            debug_print(f"Calling generate_content with model = {repr(model)}", "debug")
+            log(f"Calling generate_content with model = {repr(model)}", "debug")
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
@@ -68,7 +68,7 @@ def send_prompt(
             break
         except APIError as e:
             if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                debug_print(
+                log(
                     f"[Router] 429 RESOURCE_EXHAUSTED encountered on attempt {attempt}/3. Sleeping for {delay}s...",
                     "warning",
                 )
@@ -77,7 +77,7 @@ def send_prompt(
                 raise
     else:
         try:
-            debug_print(f"Final retry calling generate_content with model = {repr(model)}", "debug")
+            log(f"Final retry calling generate_content with model = {repr(model)}", "debug")
             response = client.models.generate_content(
                 model=model,
                 contents=chat_history,
@@ -85,7 +85,7 @@ def send_prompt(
             )
         except APIError as e:
             if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                debug_print("[Router] Exceeded retry attempts (10s, 20s, 30s). Quitting execution.", "error")
+                log("[Router] Exceeded retry attempts (10s, 20s, 30s). Quitting execution.", "error")
                 sys.exit(1)
             raise
 
@@ -108,22 +108,22 @@ def send_prompt(
     }
 
     if print_cost:
-        debug_print(f"[Router] Model: {model}", "debug")
-        debug_print(f"[Router] Input tokens: {input_tokens}", "debug")
-        debug_print(f"[Router] Output tokens: {output_tokens}", "debug")
-        debug_print(f"[Router] Thinking tokens: {thinking_tokens}", "debug")
-        debug_print(f"[Router] Total tokens: {input_tokens + output_tokens + thinking_tokens}", "debug")
-        debug_print(f"[Router] Input cost: ${input_cost:.6f}", "debug")
-        debug_print(f"[Router] Output cost: ${output_cost:.6f}", "debug")
-        debug_print(f"[Router] Thinking cost: ${thinking_cost:.6f}", "debug")
-        debug_print(f"[Router] Total cost: ${total_cost:.6f}", "debug")
+        log(f"[Router] Model: {model}", "debug")
+        log(f"[Router] Input tokens: {input_tokens}", "debug")
+        log(f"[Router] Output tokens: {output_tokens}", "debug")
+        log(f"[Router] Thinking tokens: {thinking_tokens}", "debug")
+        log(f"[Router] Total tokens: {input_tokens + output_tokens + thinking_tokens}", "debug")
+        log(f"[Router] Input cost: ${input_cost:.6f}", "debug")
+        log(f"[Router] Output cost: ${output_cost:.6f}", "debug")
+        log(f"[Router] Thinking cost: ${thinking_cost:.6f}", "debug")
+        log(f"[Router] Total cost: ${total_cost:.6f}", "debug")
         if total_cost > 0.05:
-            debug_print(f"[Router] Cost warning: ${total_cost:.6f} exceeds $0.05 threshold.", "error")
+            log(f"[Router] Cost warning: ${total_cost:.6f} exceeds $0.05 threshold.", "error")
         elif total_cost > 0.01:
-            debug_print(f"[Router] Cost notice: ${total_cost:.6f} exceeds $0.01 threshold.", "warning")
+            log(f"[Router] Cost notice: ${total_cost:.6f} exceeds $0.01 threshold.", "warning")
 
     if response.text is None:
-        debug_print("[Router] Warning: Received empty response from model.", "warning")
+        log("[Router] Warning: Received empty response from model.", "warning")
         response_text = ""
     else:
         response_text = response.text

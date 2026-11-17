@@ -13,7 +13,7 @@ from playwright.sync_api import (
     Page,
     TimeoutError as PlaywrightTimeoutError,
 )
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 # Global state to persist the browser connection across agent turns
 _PLAYWRIGHT: Playwright | None = None
@@ -75,7 +75,7 @@ def launch_chrome_if_needed():
     except urllib.error.URLError:
         pass
         
-    debug_print("[Chrome] Starting new Chrome instance with agent profile...", "info")
+    log("[Chrome] Starting new Chrome instance with agent profile...", "info")
     chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     profile_dir = os.path.expanduser("~/.agents/chrome_profile")
     os.makedirs(profile_dir, exist_ok=True)
@@ -101,7 +101,7 @@ def launch_chrome_if_needed():
         try:
             urllib.request.urlopen(url, timeout=1)
             time.sleep(0.5)  # Give Playwright a moment to sync with the new process
-            debug_print("[Chrome] Browser loaded and ready.", "success")
+            log("[Chrome] Browser loaded and ready.", "success")
             return
         except urllib.error.URLError:
             time.sleep(0.5)
@@ -115,7 +115,7 @@ def init_browser() -> Page:
 
     launch_chrome_if_needed()
 
-    debug_print("[Chrome] Connecting to Chrome via CDP...", "info")
+    log("[Chrome] Connecting to Chrome via CDP...", "info")
     try:
         _PLAYWRIGHT = sync_playwright().start()
         _BROWSER = _PLAYWRIGHT.chromium.connect_over_cdp("http://localhost:9222")

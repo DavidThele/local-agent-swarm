@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import objc
 from AppKit import NSRunLoop, NSDefaultRunLoopMode  # noqa: F401
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 # Load Frameworks
 objc.loadBundle(
@@ -148,23 +148,23 @@ class NativeSpeechEngine:
             status = AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio)
             # 0 = NotDetermined
             if status == 0:
-                debug_print("[Speech] Prompting for microphone permission...", "info")
+                log("[Speech] Prompting for microphone permission...", "info")
                 def _mic_handler(granted):
-                    debug_print(f"[Speech] Microphone permission response: {granted}", "info")
+                    log(f"[Speech] Microphone permission response: {granted}", "info")
                 AVCaptureDevice.requestAccessForMediaType_completionHandler_(AVMediaTypeAudio, _mic_handler)
         except Exception as exc:
-            debug_print(f"[Speech] Mic permission check warning: {exc}", "warning")
+            log(f"[Speech] Mic permission check warning: {exc}", "warning")
 
         # 2. Speech Recognition authorization check
         try:
             s_status = SFSpeechRecognizer.authorizationStatus()
             if s_status == 0:
-                debug_print("[Speech] Prompting for speech recognition permission...", "info")
+                log("[Speech] Prompting for speech recognition permission...", "info")
                 def _speech_handler(status):
-                    debug_print(f"[Speech] Speech recognition permission response: {status}", "info")
+                    log(f"[Speech] Speech recognition permission response: {status}", "info")
                 SFSpeechRecognizer.requestAuthorization_(_speech_handler)
         except Exception as exc:
-            debug_print(f"[Speech] Speech permission check warning: {exc}", "warning")
+            log(f"[Speech] Speech permission check warning: {exc}", "warning")
 
     def start(self):
         with self._lock:
@@ -176,7 +176,7 @@ class NativeSpeechEngine:
 
                 self.speech_recognizer = SFSpeechRecognizer.alloc().init()
                 if not self.speech_recognizer or not self.speech_recognizer.isAvailable():
-                    debug_print("[Speech] SFSpeechRecognizer is unavailable or offline.", "warning")
+                    log("[Speech] SFSpeechRecognizer is unavailable or offline.", "warning")
                     return
 
                 self.audio_engine = AVAudioEngine.alloc().init()
@@ -185,7 +185,7 @@ class NativeSpeechEngine:
 
                 # Ensure valid channel and sample rate
                 if recording_format.sampleRate() == 0:
-                    debug_print("[Speech] Audio input node returned 0 sample rate. Microphone may be muted or denied.", "error")
+                    log("[Speech] Audio input node returned 0 sample rate. Microphone may be muted or denied.", "error")
                     return
 
                 self.recognition_request = SFSpeechAudioBufferRecognitionRequest.alloc().init()
@@ -230,15 +230,15 @@ class NativeSpeechEngine:
                 self.audio_engine.prepare()
                 started = self.audio_engine.startAndReturnError_(None)
                 if not started:
-                    debug_print("[Speech] AVAudioEngine failed to start.", "error")
+                    log("[Speech] AVAudioEngine failed to start.", "error")
                     self.stop()
                     return
 
                 self._is_running = True
-                debug_print("[Speech] Microphone tap active and listening.", "success")
+                log("[Speech] Microphone tap active and listening.", "success")
 
             except Exception as exc:
-                debug_print(f"[Speech] Engine start failure: {exc}", "error")
+                log(f"[Speech] Engine start failure: {exc}", "error")
                 self.stop()
 
     def _calculate_bands(self, buffer) -> list[float]:
@@ -294,6 +294,6 @@ class NativeSpeechEngine:
                     self.recognition_task = None
 
                 self.speech_recognizer = None
-                debug_print("[Speech] Engine stopped.", "info")
+                log("[Speech] Engine stopped.", "info")
             except Exception as exc:
-                debug_print(f"[Speech] Cleanup warning: {exc}", "warning")
+                log(f"[Speech] Cleanup warning: {exc}", "warning")

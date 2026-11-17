@@ -3,7 +3,7 @@ from pathlib import Path
 from infrastructure.workspace import create_chat_instance
 from infrastructure.agent_loop import run_agent
 from infrastructure.agent_types import AgentType
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from pipelines.swarm_analyzer import analyze_session
 
 def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool | None = None) -> dict:
@@ -24,7 +24,7 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
         "request_chat_title": auto_title,
     }
     
-    debug_print(f"[SwarmCLI] Starting session {chat_id}", "system")
+    log(f"[SwarmCLI] Starting session {chat_id}", "system")
     result = run_agent(
         agent_type=AgentType.MAIN_ORCHESTRATOR,
         instructions=user_prompt,
@@ -37,7 +37,7 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
     final_chat_id = chat_context_state.get("chat_id", chat_id)
     final_chat_dir = chat_context_state.get("local_chat_dir", str(local_chat_dir))
     
-    debug_print(f"\n[SwarmCLI] Session {final_chat_id} finished with status: {result['status']}", "success")
+    log(f"\n[SwarmCLI] Session {final_chat_id} finished with status: {result['status']}", "success")
     print(result["result"])
 
     # Ask interactively if run_optimizer wasn't explicitly set to True/False
@@ -48,7 +48,7 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
         try:
             analyze_session(final_chat_dir)
         except Exception as e:
-            debug_print(f"[SwarmCLI] Optimizer post-mortem failed: {e}", "warning")
+            log(f"[SwarmCLI] Optimizer post-mortem failed: {e}", "warning")
 
     return result
 
@@ -58,4 +58,4 @@ if __name__ == "__main__":
     if prompt:
         start_swarm_session(prompt)
     else: 
-        debug_print("[SwarmCLI] No prompt provided. Exiting.", "error")
+        log("[SwarmCLI] No prompt provided. Exiting.", "error")

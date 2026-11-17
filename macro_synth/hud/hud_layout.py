@@ -27,7 +27,7 @@ from PyObjCTools import AppHelper
 import Quartz
 import WebKit
 
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from ..context_capture import capture_screen_context_exclude_hud
 from ..speech_engine import NativeSpeechEngine
 from .hud_bridge import (
@@ -311,7 +311,7 @@ class MacroHUD:
             idx = data.get("index")
             if isinstance(idx, int) and 0 <= idx < len(self.added_context_pages):
                 removed = self.added_context_pages.pop(idx)
-                debug_print(f"[HUD] Removed context page: {removed[0]}", "data")
+                log(f"[HUD] Removed context page: {removed[0]}", "data")
                 if self.panel:
                     NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
                     self.panel.makeKeyAndOrderFront_(None)
@@ -409,7 +409,7 @@ class MacroHUD:
                 Quartz.NSKeyDownMask | Quartz.NSFlagsChangedMask, _handle_event
             )
         except Exception as exc:
-            debug_print(f"[HUD] Prompt key monitor setup warning: {exc}", "warning")
+            log(f"[HUD] Prompt key monitor setup warning: {exc}", "warning")
 
     def _stop_prompt_key_monitor(self):
         if self.prompt_key_monitor is not None:
@@ -467,7 +467,7 @@ class MacroHUD:
                 _handle_local_event,
             )
         except Exception as exc:
-            debug_print(f"[HUD] Feedback local monitor setup warning: {exc}", "warning")
+            log(f"[HUD] Feedback local monitor setup warning: {exc}", "warning")
 
         # 2. Global monitor for outside clicks or global Esc/Fn
         monitor_start_time = time.time()
@@ -504,7 +504,7 @@ class MacroHUD:
                 _handle_global_event,
             )
         except Exception as exc:
-            debug_print(f"[HUD] Feedback global monitor setup warning: {exc}", "warning")
+            log(f"[HUD] Feedback global monitor setup warning: {exc}", "warning")
 
     def _stop_feedback_key_monitor(self):
         if self.feedback_monitor is not None:
@@ -552,7 +552,7 @@ class MacroHUD:
             desc, img_bytes = captured
             display_label = self.candidate_context_label or desc
             self.added_context_pages.append((display_label, img_bytes))
-            debug_print(f"[HUD] Added context page: {display_label}", "data")
+            log(f"[HUD] Added context page: {display_label}", "data")
             if self.panel:
                 NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
                 self.panel.makeKeyAndOrderFront_(None)
@@ -690,7 +690,7 @@ class MacroHUD:
         else:
             lines.append("MACRO ANALYSIS SUMMARY:\nAnalyzing telemetry & deep DOM...")
 
-        debug_print(f"[HUD] Status: {self.status_text}\n" + "\n".join(lines), "data")
+        log(f"[HUD] Status: {self.status_text}\n" + "\n".join(lines), "data")
 
         if self.mode not in ("prompt", "feedback", "hidden"):
             if self.actions and len(self.actions) > 0:

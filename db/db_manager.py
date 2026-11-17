@@ -3,7 +3,7 @@ import chromadb
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 def get_db_path(global_dir: str = "~/.agents") -> Path:
     if global_dir == "~/.agents" and os.environ.get("AGENTS_DB_DIR"):
@@ -43,7 +43,7 @@ def clear():
     existing_ids = collection.get()["ids"]
     if existing_ids:
         collection.delete(ids=existing_ids)
-    debug_print("[DbManager] DB cleared.", "success")
+    log("[DbManager] DB cleared.", "success")
 
     
 def search_similar_chunks(query_text: str, n_results: int = 5) -> List[Dict[str, Any]]:
@@ -72,13 +72,13 @@ def search_similar_chunks(query_text: str, n_results: int = 5) -> List[Dict[str,
 
 if __name__ == "__main__":
     # Test DB setup
-    debug_print("[DbManager] Testing ChromaDB setup...", "system")
+    log("[DbManager] Testing ChromaDB setup...", "system")
     c_id = add_chunk("David uses React for JumboCode frontend development.", {"timestamp": "2026-10-25"})
-    debug_print(f"[DbManager] Added chunk: {c_id}", "success")
+    log(f"[DbManager] Added chunk: {c_id}", "success")
     
     matches = search_similar_chunks("What framework does David use for frontend?")
     for match in matches:
-        debug_print(f"[DbManager] Match {match['id']}: {match['text']}", "data")
+        log(f"[DbManager] Match {match['id']}: {match['text']}", "data")
         
     delete_chunk(c_id)
-    debug_print("[DbManager] Cleaned up test chunk.", "success")
+    log("[DbManager] Cleaned up test chunk.", "success")

@@ -14,7 +14,7 @@ from datetime import datetime
 from AppKit import NSApplication, NSRunningApplication, NSWorkspace
 from PyObjCTools import AppHelper
 
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from infrastructure.parser import parse_llm_output
 from infrastructure.prompt_router import send_prompt
 from infrastructure.scrubber import scrub_text
@@ -67,7 +67,7 @@ def run_macro_once(hud: MacroHUD):
             # STATE 1: Specify Request + dynamic context pills
             cancelled, user_message, extra_pages = hud.wait_for_user_prompt(target_app=target_app)
             if cancelled:
-                debug_print("[MacroSynth] Run cancelled by user from prompt box.", "warning")
+                log("[MacroSynth] Run cancelled by user from prompt box.", "warning")
                 return
 
             # STATE 2: Loading ("Processing..." with spinning icon, clearing any prior actions)
@@ -116,7 +116,7 @@ def run_macro_once(hud: MacroHUD):
             )
             while not future.done():
                 if abort_event.is_set():
-                    debug_print("[MacroSynth] Aborted during API request.", "error")
+                    log("[MacroSynth] Aborted during API request.", "error")
                     return
                 time.sleep(0.05)
             llm_xml, _, _ = future.result()
@@ -135,7 +135,7 @@ def run_macro_once(hud: MacroHUD):
         # which automatically pops out the semi-circular action wheel)
         executed_successfully = execute_macro_commands(commands, hud)
         if not executed_successfully:
-            debug_print("[MacroSynth] Macro sequence stopped before completion.", "warning")
+            log("[MacroSynth] Macro sequence stopped before completion.", "warning")
 
         # Stop execution kill switch and screen recording before asking for feedback
         input_events.stop_physical_kill_switch()
@@ -152,7 +152,7 @@ def run_macro_once(hud: MacroHUD):
 
     except Exception as exc:
         had_error = True
-        debug_print(f"[MacroSynth] Worker failed: {exc}", "error")
+        log(f"[MacroSynth] Worker failed: {exc}", "error")
         hud.update(status_text=f"Error: {exc}", actions=[], wait=True)
     finally:
         input_events.stop_physical_kill_switch()
@@ -204,7 +204,7 @@ class MacroService:
             pass
         self.server_thread = threading.Thread(target=self._serve, daemon=True)
         self.server_thread.start()
-        debug_print(f"[MacroSynth] Resident service listening on {SOCKET_PATH}.", "success")
+        log(f"[MacroSynth] Resident service listening on {SOCKET_PATH}.", "success")
 
     def _serve(self):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:

@@ -4,7 +4,7 @@ from datetime import datetime
 from infrastructure.prompt_router import send_prompt
 from infrastructure.models import GEMINI_3_8_FLASH
 from infrastructure.parser import parse_llm_output
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from pipelines.performance_analyzer import snapshot_prompt_history
 
 GLOBAL_ROOT = Path.home() / ".agents"
@@ -43,11 +43,11 @@ def analyze_session(chat_id_or_path: str) -> dict:
     else:
         chat_dir = GLOBAL_ROOT / "chats" / chat_id_or_path
 
-    debug_print(f"\n[SwarmAnalyzer] Auditing session artifacts in {chat_dir}...", "info")
+    log(f"\n[SwarmAnalyzer] Auditing session artifacts in {chat_dir}...", "info")
     session_logs = collect_session_artifacts(chat_dir)
 
     if not session_logs.strip():
-        debug_print("[SwarmAnalyzer] No trace or summary files found in session directory. Skipping.", "warning")
+        log("[SwarmAnalyzer] No trace or summary files found in session directory. Skipping.", "warning")
         return {"status": "skipped", "reason": "no_artifacts"}
 
     agents_md_path = GLOBAL_ROOT / "AGENTS.md" if (GLOBAL_ROOT / "AGENTS.md").exists() else REPO_ROOT / "AGENTS.md"
@@ -78,9 +78,9 @@ def analyze_session(chat_id_or_path: str) -> dict:
             score = report_summary.get("EfficiencyScore", "N/A")
             bottlenecks = report_summary.get("Bottlenecks", "None")
             recs = report_summary.get("Recommendations", "None")
-            debug_print(f"[SwarmAnalyzer] Efficiency Score: {score}", "info")
-            debug_print(f"[SwarmAnalyzer] Bottlenecks: {bottlenecks}", "warning")
-            debug_print(f"[SwarmAnalyzer] Recommendations: {recs}", "data")
+            log(f"[SwarmAnalyzer] Efficiency Score: {score}", "info")
+            log(f"[SwarmAnalyzer] Bottlenecks: {bottlenecks}", "warning")
+            log(f"[SwarmAnalyzer] Recommendations: {recs}", "data")
 
         elif cmd.command == "UpdateAgentsMd":
             if isinstance(cmd.content, dict):
@@ -98,7 +98,7 @@ def analyze_session(chat_id_or_path: str) -> dict:
                 
                 snapshot_prompt_history(new_content + "\n", summary, prefix="agents")
                 modifications.append(summary)
-                debug_print(f"[SwarmAnalyzer] Upgraded AGENTS.md: {summary}", "success")
+                log(f"[SwarmAnalyzer] Upgraded AGENTS.md: {summary}", "success")
 
         elif cmd.command == "UpsertSkill":
             skill_name = cmd.attributes.get("name", "").strip().lower().replace(" ", "_")
@@ -113,7 +113,7 @@ def analyze_session(chat_id_or_path: str) -> dict:
                 skill_path = skills_dir / f"{skill_name}.md"
                 skill_path.write_text(skill_body + "\n", encoding="utf-8")
                 modifications.append(summary)
-                debug_print(f"[SwarmAnalyzer] Saved skill '{skill_path.name}': {summary}", "success")
+                log(f"[SwarmAnalyzer] Saved skill '{skill_path.name}': {summary}", "success")
 
     report_file = chat_dir / "optimizer_report.txt"
     total_cost = cost.get("total_cost", 0.0) if isinstance(cost, dict) else 0.0

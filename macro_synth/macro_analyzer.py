@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from google.genai import types
 
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from infrastructure.parser import parse_llm_output
 from infrastructure.prompt_router import send_prompt
 from infrastructure.models import GEMINI_3_8_FLASH
@@ -20,9 +20,9 @@ def load_macro_analyzer_prompt() -> str:
     return repo_path.read_text(encoding="utf-8")
 
 def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path, feedback: str = ""):
-    debug_print(f"[MacroAnalyzer] Starting analysis for prompt: {prompt_file.name}, xml: {xml_output_file.name}", "info")
+    log(f"[MacroAnalyzer] Starting analysis for prompt: {prompt_file.name}, xml: {xml_output_file.name}", "info")
     if not prompt_file.exists() or not xml_output_file.exists():
-        debug_print("[MacroAnalyzer] Missing prompt or xml logs. Skipping analysis.", "warning")
+        log("[MacroAnalyzer] Missing prompt or xml logs. Skipping analysis.", "warning")
         return
 
     sys_prompt = load_macro_analyzer_prompt()
@@ -47,7 +47,7 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path, fe
     media_files = []
     
     if video_file.exists() and video_file.stat().st_size > 100:
-        debug_print(f"[MacroAnalyzer] Uploading screen recording {video_file.name} to Gemini...", "info")
+        log(f"[MacroAnalyzer] Uploading screen recording {video_file.name} to Gemini...", "info")
         try:
             with open(video_file, "rb") as f:
                 video_bytes = f.read()
@@ -58,9 +58,9 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path, fe
             )
             media_files.append(video_part)
         except Exception as e:
-            debug_print(f"[MacroAnalyzer] Failed to upload video: {e}", "error")
+            log(f"[MacroAnalyzer] Failed to upload video: {e}", "error")
 
-    debug_print("[MacroAnalyzer] Analyzing macro execution...", "info")
+    log("[MacroAnalyzer] Analyzing macro execution...", "info")
     
     result_text, _, _ = send_prompt(
         prompt_text=full_prompt,
@@ -70,7 +70,7 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path, fe
     )
     
     if not result_text.strip():
-        debug_print("[MacroAnalyzer] Analysis failed: Model returned an empty response.", "error")
+        log("[MacroAnalyzer] Analysis failed: Model returned an empty response.", "error")
         return
 
     analyzer_output_dir = LOGS_DIR / "analyzer_output"
@@ -99,23 +99,23 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path, fe
         if not verdict_status and isinstance(content.get("Verdict"), dict):
             verdict_status = content.get("Verdict", {}).get("@status", "")
 
-        debug_print("=== MACRO EVALUATION REPORT ===", "info")
+        log("=== MACRO EVALUATION REPORT ===", "info")
         if user_prompt_intent:
-            debug_print(f"[UserPromptIntent]\n{user_prompt_intent}", "data")
+            log(f"[UserPromptIntent]\n{user_prompt_intent}", "data")
         if observed_execution:
-            debug_print(f"[ObservedVideoExecution]\n{observed_execution}", "data")
+            log(f"[ObservedVideoExecution]\n{observed_execution}", "data")
         if alignment_comparison:
-            debug_print(f"[AlignmentComparison]\n{alignment_comparison}", "data")
+            log(f"[AlignmentComparison]\n{alignment_comparison}", "data")
         if verdict_text or verdict_status:
             status_label = f" (Status: {verdict_status})" if verdict_status else ""
-            debug_print(f"[Verdict{status_label}]\n{verdict_text}", "data")
+            log(f"[Verdict{status_label}]\n{verdict_text}", "data")
 
         if verdict_status.upper() == "SUCCESS" or "SUCCESS" in verdict_text.upper():
             is_success = True
 
     if success_reasoning:
         reasoning_text = success_reasoning.content if isinstance(success_reasoning.content, str) else str(success_reasoning.content).strip()
-        debug_print(f"[SuccessReasoning]\n{reasoning_text}", "success")
+        log(f"[SuccessReasoning]\n{reasoning_text}", "success")
         is_success = True
 
     if update_instructions:
@@ -137,13 +137,13 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path, fe
                 repo_inst.write_text(new_content + "\n", encoding="utf-8")
             
             snapshot_prompt_history(new_content + "\n", summary, prefix="macro")
-            debug_print(f"[MacroAnalyzer] Upgraded macro_instructions.md: {summary}", "success")
+            log(f"[MacroAnalyzer] Upgraded macro_instructions.md: {summary}", "success")
             return
 
     if is_success:
-        debug_print("[MacroAnalyzer] Macro execution succeeded completely. No system prompt updates needed.", "success")
+        log("[MacroAnalyzer] Macro execution succeeded completely. No system prompt updates needed.", "success")
     else:
-        debug_print("[MacroAnalyzer] Analysis returned without an <UpdateMacroInstructions> tag or explicit success verdict.", "warning")
+        log("[MacroAnalyzer] Analysis returned without an <UpdateMacroInstructions> tag or explicit success verdict.", "warning")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze synthesized macro performance.")

@@ -4,7 +4,7 @@ from xml.sax.saxutils import escape
 from infrastructure.prompt_router import send_prompt, GEMINI_3_1_FLASH_LITE
 from db.db_manager import add_chunk, delete_chunk, search_similar_chunks
 from infrastructure.parser import parse_llm_output
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 
 N_SEARCH_RESULTS = 5
 
@@ -34,14 +34,14 @@ def process_telemetry(raw_log: str):
     # ==========================================
     # PHASE 1: Extraction
     # ==========================================
-    debug_print("[Ingestor] Starting Phase 1: Extracting raw facts...", "info")
+    log("[Ingestor] Starting Phase 1: Extracting raw facts...", "info")
     
     phase1_prompt = f"{sys_prompt}\n\n=== RAW TELEMETRY LOG ===\n{raw_log}\n\nExecute Phase 1."
     
     # Call the router
     output1, history1, _ = send_prompt(prompt_text=phase1_prompt, model=GEMINI_3_1_FLASH_LITE)
 
-    debug_print(f"[Ingestor] Phase 1 output: {output1}\n", "data")
+    log(f"[Ingestor] Phase 1 output: {output1}\n", "data")
 
     # Parse the LLM's XML output
     commands1 = parse_llm_output(output1)
@@ -59,10 +59,10 @@ def process_telemetry(raw_log: str):
                 new_chunks.append(cmd.content.strip())
                 
     if not new_chunks:
-        debug_print("[Ingestor] No actionable chunks extracted from log. Exiting.", "warning")
+        log("[Ingestor] No actionable chunks extracted from log. Exiting.", "warning")
         return
         
-    debug_print(f"[Ingestor] Extracted {len(new_chunks)} distinct chunks. Querying database for context...", "info")
+    log(f"[Ingestor] Extracted {len(new_chunks)} distinct chunks. Querying database for context...", "info")
 
     # ==========================================
     # PHASE 2: Semantic Synthesis
@@ -79,7 +79,7 @@ def process_telemetry(raw_log: str):
             comparisons_xml += f'    <Existing id="{sim["id"]}">{existing_text}</Existing>\n'
         comparisons_xml += "</Compare>\n\n"
         
-    debug_print("[Ingestor] Starting Phase 2: Synthesizing memory constraints...", "info")
+    log("[Ingestor] Starting Phase 2: Synthesizing memory constraints...", "info")
     
     phase2_prompt = (
         "Execute Phase 2 (Synthesis & Database Management). Read the Phase 1 extraction XML from "
@@ -94,7 +94,7 @@ def process_telemetry(raw_log: str):
     # copying its extraction XML into the Phase 2 request.
     output2, _, _ = send_prompt(prompt_text=phase2_prompt, model=GEMINI_3_1_FLASH_LITE, chat_history=history1)
 
-    debug_print(f"[Ingestor] Phase 2 output: {output2}\n", "data")
+    log(f"[Ingestor] Phase 2 output: {output2}\n", "data")
     
     commands2 = parse_llm_output(output2)
     
@@ -111,9 +111,9 @@ def process_telemetry(raw_log: str):
                 try:
                     delete_chunk(chunk_id)
                     deleted_count += 1
-                    debug_print(f"[Ingestor] Deleted old chunk: {chunk_id}", "success")
+                    log(f"[Ingestor] Deleted old chunk: {chunk_id}", "success")
                 except Exception as e:
-                    debug_print(f"[Ingestor] Failed to delete chunk {chunk_id}: {e}", "error")
+                    log(f"[Ingestor] Failed to delete chunk {chunk_id}: {e}", "error")
                     
         elif cmd.command == "CommitChunk":
             text = ""
@@ -130,11 +130,11 @@ def process_telemetry(raw_log: str):
                 try:
                     new_id = add_chunk(text, metadata)
                     added_count += 1
-                    debug_print(f"[Ingestor] Added new synthesized chunk: {new_id}", "success")
+                    log(f"[Ingestor] Added new synthesized chunk: {new_id}", "success")
                 except Exception as e:
-                    debug_print(f"[Ingestor] Failed to add chunk: {e}", "error")
+                    log(f"[Ingestor] Failed to add chunk: {e}", "error")
                     
-    debug_print(f"\n[Ingestor] Pipeline complete. Added: {added_count} | Deleted: {deleted_count}", "success")
+    log(f"\n[Ingestor] Pipeline complete. Added: {added_count} | Deleted: {deleted_count}", "success")
 
 if __name__ == "__main__":
     # Example test run

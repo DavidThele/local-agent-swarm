@@ -22,7 +22,7 @@ from AppKit import (
     NSWorkspace,
 )
 
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from infrastructure.scrubber import scrub_text
 from .runtime import (
     DATA_DIR,
@@ -41,9 +41,9 @@ def _save_screenshot_to_log(png_bytes: bytes, label: str) -> None:
         safe_label = re.sub(r"[^\w\-.]+", "_", label).strip("_") or "screen"
         file_path = SCREEN_CONTEXTS_DIR / f"{timestamp}_{safe_label}.png"
         file_path.write_bytes(png_bytes)
-        debug_print(f"[MacroSynth] Saved screenshot artifact to {file_path}", "debug")
+        log(f"[MacroSynth] Saved screenshot artifact to {file_path}", "debug")
     except Exception as exc:
-        debug_print(f"[MacroSynth] Failed saving screenshot to {SCREEN_CONTEXTS_DIR}: {exc}", "warning")
+        log(f"[MacroSynth] Failed saving screenshot to {SCREEN_CONTEXTS_DIR}: {exc}", "warning")
 
 def _overlay_coordinate_grid(
     png_bytes: bytes,
@@ -63,7 +63,7 @@ def _overlay_coordinate_grid(
     target_width = int(main_rect.size.width)
     target_height = int(main_rect.size.height)
     
-    debug_print(f"[MacroSynth] Overlaying coordinate grid on screenshot for '{label}'...", "debug")
+    log(f"[MacroSynth] Overlaying coordinate grid on screenshot for '{label}'...", "debug")
     with Image.open(io.BytesIO(png_bytes)) as base_img:
         img = base_img.convert("RGBA")
         
@@ -109,7 +109,7 @@ def _overlay_coordinate_grid(
         composited.save(out_buf, format="PNG", optimize=True)
         final_bytes = out_buf.getvalue()
 
-        debug_print(f"[MacroSynth] Finished overlaying grid on screenshot for '{label}'.", "debug")
+        log(f"[MacroSynth] Finished overlaying grid on screenshot for '{label}'.", "debug")
         _save_screenshot_to_log(final_bytes, label)
         return final_bytes
 
@@ -197,7 +197,7 @@ def get_recent_app_names(log_text: str) -> list[str]:
         if app_name and app_name not in app_names:
             app_names.append(app_name)
     selected_apps = app_names[-MAX_APP_SCREENSHOTS:]
-    debug_print(f"[MacroSynth] Selected {len(selected_apps)} recent application(s) for screenshot capture.", "debug")
+    log(f"[MacroSynth] Selected {len(selected_apps)} recent application(s) for screenshot capture.", "debug")
     return selected_apps
 
 def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]:
@@ -251,7 +251,7 @@ def get_visible_app_screenshots(app_names: list[str]) -> list[tuple[str, bytes]]
                 )
                 screenshots.append((app_name, processed_bytes))
 
-        debug_print(
+        log(
             f"[MacroSynth] Captured {len(screenshots)}/{len(app_names)} requested application screenshot(s).",
             "debug",
         )
@@ -307,7 +307,7 @@ def capture_screen_context_exclude_hud(
             return None
         
         processed_bytes = _overlay_coordinate_grid(bytes(png_data), label=desc)
-        debug_print(f"[MacroSynth] Added full-screen page context with grid: '{desc}'", "info")
+        log(f"[MacroSynth] Added full-screen page context with grid: '{desc}'", "info")
         return (desc, processed_bytes)
     
 def get_last_n_log_lines(n: int = LOG_LINES_TO_SEND) -> str:
@@ -392,7 +392,7 @@ def build_prompt_context(
     """
     raw_log_tail = get_last_n_log_lines()
     scrubbed_log = scrub_text(raw_log_tail)
-    debug_print(
+    log(
         f"[MacroSynth] Captured {len(raw_log_tail.splitlines())} telemetry line(s) and scrubbed them for the prompt.",
         "debug",
     )
@@ -406,7 +406,7 @@ def build_prompt_context(
         recent_apps = [deep_dom["active_app"]]
     screenshots = get_visible_app_screenshots(recent_apps)
     labels = ", ".join(name for name, _ in screenshots) or "none"
-    debug_print(
+    log(
         f"[MacroSynth] Prepared DOM, clipboard, and {len(screenshots)} screenshot attachment(s): {labels}.",
         "debug",
     )
@@ -436,16 +436,16 @@ class ScreenRecorder:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-        debug_print(f"[ScreenRecorder] Started recording to {self.filepath.name}", "system")
+        log(f"[ScreenRecorder] Started recording to {self.filepath.name}", "system")
 
     def stop(self, post_buffer_seconds: float = 1.0):
         """Stops the recording after an optional trailing buffer delay."""
         if self.process:
             if post_buffer_seconds > 0:
-                debug_print(f"[ScreenRecorder] Waiting {post_buffer_seconds}s buffer before stopping recording...", "system")
+                log(f"[ScreenRecorder] Waiting {post_buffer_seconds}s buffer before stopping recording...", "system")
                 time.sleep(post_buffer_seconds)
 
             self.process.send_signal(signal.SIGINT)
             self.process.wait()
             self.process = None
-            debug_print(f"[ScreenRecorder] Stopped recording.", "system")
+            log(f"[ScreenRecorder] Stopped recording.", "system")

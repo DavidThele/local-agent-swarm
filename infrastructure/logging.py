@@ -24,7 +24,7 @@ DEBUG_LOG_PATH = LOGS_DIR / "debug_log.log"
 _DEBUG_LOG_LOCK = threading.Lock()
 
 
-def debug_print(message: object, color: str = "info") -> None:
+def log(message: object, color: str = "info") -> None:
     """Print a diagnostic message with only its source label colored."""
     color_code = COLORS[color]
     text = str(message)

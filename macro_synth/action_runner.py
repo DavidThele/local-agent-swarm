@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from command_executors import zsh_exec
 from . import input_events
 from .runtime import ACTION_BUFFER_TIME_MS, abort_event
@@ -14,18 +14,18 @@ from .runtime import ACTION_BUFFER_TIME_MS, abort_event
 
 def _create_action_logger():
     """Create a timestamped log file in /logs/actions/{datetime}.log and return a log helper."""
-    debug_print("[MacroSynth] Creating action log file...", "debug")
+    log("[MacroSynth] Creating action log file...", "debug")
     log_dir = Path.cwd() / "logs" / "actions"
     log_dir.mkdir(parents=True, exist_ok=True)
     run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     log_path = log_dir / f"{run_timestamp}.log"
 
-    def log(message: str) -> None:
+    def action_log(message: str) -> None:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
 
-    return log
+    return action_log
 
 
 def format_action_label(tag: str, attrs: dict, body: str) -> str:
@@ -81,7 +81,7 @@ def execute_macro_commands(commands: list, hud) -> bool:
     log_action(f"Macro execution initialized with {len(action_cmds)} action(s).")
 
     for warning in unoptimized_action_warnings(action_cmds):
-        debug_print(f"[MacroSynth] Optimization warning: {warning}", "warning")
+        log(f"[MacroSynth] Optimization warning: {warning}", "warning")
         log_action(f"WARNING: {warning}")
 
     hud_actions = []
@@ -144,7 +144,7 @@ def execute_macro_commands(commands: list, hud) -> bool:
                 float(attrs["x"]), float(attrs["y"]), attrs.get("button", "left"), int(attrs.get("count", 1))
             )
             status = "posted" if posted else "not posted"
-            debug_print(
+            log(
                 f"[MacroSynth] Mouse event {status} at ({attrs['x']}, {attrs['y']}).",
                 "debug" if posted else "error",
             )
@@ -166,7 +166,7 @@ def execute_macro_commands(commands: list, hud) -> bool:
             log_action(f"Step {index + 1}/{len(action_cmds)} [Wait] {ms}ms | Reasoning: {reasoning}")
         elif tag == "Zsh":
             result = zsh_exec.execute(attrs, cmd.content, {})
-            debug_print(f"[MacroSynth] Terminal command result:\n{result}", "data")
+            log(f"[MacroSynth] Terminal command result:\n{result}", "data")
             log_action(
                 f"Step {index + 1}/{len(action_cmds)} [Zsh] {cmd.content!r} | Reasoning: {reasoning} | Result: {result!r}"
             )

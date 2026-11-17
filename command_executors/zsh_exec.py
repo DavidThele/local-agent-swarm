@@ -1,7 +1,7 @@
 import shlex
 import subprocess
 from pathlib import Path
-from infrastructure.debugging import debug_print
+from infrastructure.logging import log
 from infrastructure.concurrency import TERMINAL_LOCK
 
 # Hardcoded baseline shell injection vectors (newlines, carriage returns, subshells)
@@ -15,7 +15,7 @@ def load_security_list(filepath: Path) -> set:
     """
     items = set()
     if not filepath.exists():
-        debug_print(f"[Zsh] Security file not found: {filepath}", "warning")
+        log(f"[Zsh] Security file not found: {filepath}", "warning")
         return items
 
     with open(filepath, "r", encoding="utf-8") as f:
