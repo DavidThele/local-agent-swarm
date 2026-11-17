@@ -7,6 +7,7 @@ from pathlib import Path
 from infrastructure.prompt_router import send_prompt
 from infrastructure.parser import parse_llm_output
 from infrastructure.agent_types import AgentType
+from infrastructure.workspace import rename_chat_instance
 
 MAX_WORKER_ITERATIONS = 10
 MAX_ORCHESTRATOR_ITERATIONS = 30
@@ -201,6 +202,12 @@ def run_agent(
     current_prompt += f"<Context>{context}</Context>\n"
     if dod:
         current_prompt += f"<DoD>{dod}</DoD>\n"
+    if agent_type is AgentType.MAIN_ORCHESTRATOR and chat_context_state.get("request_chat_title"):
+        current_prompt += (
+            "\n[System Note] Because this is the start of a new session, include a "
+            "<ChatTitle>brief 2-5 word title</ChatTitle> tag in your first response "
+            "to name this conversation directory.\n"
+        )
 
     model_to_use = agent_type.model
     chat_history = []
@@ -251,7 +258,7 @@ def run_agent(
 
         for cmd in commands:
             print(f"  [{agent_id}] -> Executing <{cmd.command}>...")
-
+            
             try:
                 module_name = ''.join(['_'+c.lower() if c.isupper() else c for c in cmd.command]).lstrip('_') + "_exec"
                 allowed_commands = agent_type.commands

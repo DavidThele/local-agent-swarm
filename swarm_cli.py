@@ -12,14 +12,17 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
     Initializes a local/global symlinked chat workspace, boots the Main Orchestrator,
     and optionally runs the Phase 5 Performance Analyzer post-mortem upon completion.
     """
+    auto_title = (chat_id == "")
     chat_id, local_chat_dir = create_chat_instance(chat_id=chat_id)
     
     chat_context_state = {
+        "chat_id": chat_id,
         "local_chat_dir": str(local_chat_dir),
         "workspace_root": str(Path.cwd().resolve()),
         "worker_id": AgentType.MAIN_ORCHESTRATOR.id_prefix,
         "notification_queue": queue.Queue(),
-        "active_children": {}
+        "active_children": {},
+        "request_chat_title": auto_title,
     }
     
     debug_print(f"[SwarmCLI] Starting session {chat_id}", "system")
@@ -32,7 +35,10 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
         agent_id="main"
     )
     
-    debug_print(f"\n[SwarmCLI] Session {chat_id} finished with status: {result['status']}", "success")
+    final_chat_id = chat_context_state.get("chat_id", chat_id)
+    final_chat_dir = chat_context_state.get("local_chat_dir", str(local_chat_dir))
+    
+    debug_print(f"\n[SwarmCLI] Session {final_chat_id} finished with status: {result['status']}", "success")
     print(result["result"])
 
     # Ask interactively if run_optimizer wasn't explicitly set to True/False
@@ -41,7 +47,7 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
 
     if run_optimizer:
         try:
-            analyze_session(str(local_chat_dir))
+            analyze_session(final_chat_dir)
         except Exception as e:
             debug_print(f"[SwarmCLI] Optimizer post-mortem failed: {e}", "warning")
 

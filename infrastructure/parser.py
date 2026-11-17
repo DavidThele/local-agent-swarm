@@ -12,7 +12,8 @@ RAW_TEXT_TAGS = (
     "EndGoal", "CurrentState", "GeneralSteps", "WorkingMemory",
     "TypeText", "KeyCombo", "KeyPress",
     "UserPromptIntent", "ObservedVideoExecution", 
-    "AlignmentComparison", "SuccessReasoning", "Verdict"
+    "AlignmentComparison", "SuccessReasoning", "Verdict",
+    "ChatTitle"
 )
 
 @dataclass

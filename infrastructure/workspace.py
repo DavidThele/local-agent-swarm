@@ -1,3 +1,4 @@
+import re
 import uuid
 from pathlib import Path
 from infrastructure.debugging import debug_print
@@ -123,6 +124,59 @@ def create_chat_instance(chat_id: str = '') -> tuple[str, Path]:
     
     debug_print(f"[System] Local chat instance created: {local_chat_dir.resolve()}", "success")
     return chat_id, local_chat_dir
+
+def sanitize_chat_title(raw_title: str) -> str:
+    """Converts a brief chat title into a clean, filesystem-safe directory slug."""
+    cleaned = re.sub(r"[^\w\s-]", "", raw_title.strip().lower())
+    slug = re.sub(r"[-\s]+", "_", cleaned).strip("_")
+    return slug[:60] or uuid.uuid4().hex[:12]
+
+def rename_chat_instance(current_chat_dir: str | Path, new_title: str) -> tuple[str, Path]:
+    """
+    Renames an existing local chat directory to a sanitized title slug and updates
+    its corresponding symlink in ~/.agents/chats/.
+    """
+    global_root = init_global_workspace()
+    global_chats_dir = global_root / "chats"
+
+    old_dir = Path(current_chat_dir).resolve()
+    old_id = old_dir.name
+    chats_parent = old_dir.parent
+
+    base_slug = sanitize_chat_title(new_title)
+    new_slug = base_slug
+    counter = 2
+
+    # Ensure uniqueness locally and globally
+    while (
+        (chats_parent / new_slug).exists()
+        and (chats_parent / new_slug).resolve() != old_dir
+    ) or (
+        (global_chats_dir / new_slug).exists()
+        and not (global_chats_dir / new_slug).is_symlink()
+    ):
+        new_slug = f"{base_slug}_{counter}"
+        counter += 1
+
+    new_dir = chats_parent / new_slug
+
+    if old_dir.exists() and old_dir != new_dir:
+        old_dir.rename(new_dir)
+
+    # Remove old global symlink if it points to the old directory
+    old_symlink = global_chats_dir / old_id
+    if old_symlink.is_symlink():
+        old_symlink.unlink()
+
+    # Create updated global symlink
+    new_symlink = global_chats_dir / new_slug
+    if new_dir.resolve() != new_symlink.resolve():
+        if new_symlink.is_symlink():
+            new_symlink.unlink()
+        new_symlink.symlink_to(new_dir.resolve(), target_is_directory=True)
+
+    debug_print(f"[System] Renamed chat session '{old_id}' -> '{new_slug}'", "success")
+    return new_slug, new_dir
 
 if __name__ == "__main__":
     # Test the initialization
