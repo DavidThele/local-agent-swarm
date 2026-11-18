@@ -44,5 +44,6 @@ launchd/*.plist
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+node_modules
 
 chrome_profile/

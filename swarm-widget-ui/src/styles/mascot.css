@@ -1,0 +1,109 @@
+/* ==========================================================================
+   STRICT MONOCHROME + ELECTRIC ORANGE (#FF6B00) & SPRITE SHEET DEFINITIONS
+   ========================================================================== */
+
+.byte-sprite {
+  width: 64px;
+  height: 64px;
+  image-rendering: pixelated;
+  background-repeat: no-repeat;
+  position: absolute;
+  top: 0;
+  left: 0;
+  user-select: none;
+  /* Zero CSS transition easing: position is driven strictly by linear RAF kinematics */
+  will-change: transform;
+}
+
+.byte-sprite.has-custom-spritesheet {
+  --n: 8; /* Default frame count */
+  --numrows: 10; /* Total rows in the sprite sheet */
+  --row: 0; /* Current active row */
+  
+  background-image: url('/sprites/byte_spritesheet.png');
+  
+  /* Dynamically scale width based on frame count. Height scales proportionally. */
+  background-size: calc(var(--n) * 100%) auto;
+  
+  /* Percentage positioning aligns the container relative to the overflow image space.
+     Using 100% / (numrows - 1) shifts it perfectly frame-by-frame regardless of actual pixel height. */
+  background-position-y: calc(var(--row) * 100% / (var(--numrows) - 1));
+}
+
+/* Percentage background positions are an offset of (Container - Image). 
+   To cycle exactly N frames on the X axis, we shift based on N */
+@keyframes sprite-play {
+  from { background-position-x: 0%; }
+  to   { background-position-x: calc(100% * var(--n) / (var(--n) - 1)); }
+}
+
+.byte-sprite.has-custom-spritesheet[data-state='idle'] {
+  --row: 0;
+  animation: sprite-play 0.9s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='run_bezel'] {
+  --n: 6; /* Sprinting has fewer frames */
+  --row: 1;
+  animation: sprite-play 0.4s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='climb_bezel'] {
+  --row: 2;
+  animation: sprite-play 0.45s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='run_canvas_topdown'] {
+  --row: 3;
+  animation: sprite-play 0.4s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='carry_acorn'] {
+  --row: 4;
+  animation: sprite-play 0.42s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='dig'] {
+  --row: 5;
+  animation: sprite-play 0.3s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='wave_point'],
+.byte-sprite.has-custom-spritesheet[data-state='offscreen_point'] {
+  --row: 6;
+  animation: sprite-play 0.6s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='hardhat_inspect'] {
+  --row: 7;
+  animation: sprite-play 0.75s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='glass_knock'] {
+  --row: 8;
+  animation: sprite-play 0.5s steps(var(--n)) infinite;
+}
+.byte-sprite.has-custom-spritesheet[data-state='peekaboo_snack'] {
+  --row: 9;
+  animation: sprite-play 1.1s steps(var(--n)) infinite;
+}
+
+/* Subtle Monochrome Edge Dash Flow */
+@keyframes dash-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.swarm-edge-active path {
+  stroke-dasharray: 5 5;
+  animation: dash-flow 0.7s linear infinite;
+}
+
+/* Minimized Bar Orange Pulse when Blocked */
+@keyframes bar-hitl-pulse {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(255, 107, 0, 0.35);
+    border-color: rgba(255, 107, 0, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(255, 107, 0, 0.85);
+    border-color: #FF6B00;
+  }
+}
+
+.peekaboo-bar-alert {
+  animation: bar-hitl-pulse 1.2s ease-in-out infinite;
+}
