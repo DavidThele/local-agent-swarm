@@ -25,7 +25,7 @@ export const MASCOT_CONFIG = {
   RIGHT_WALL_FLUSH_OFFSET: 64,    // Mathematically flush with right bezel (width - 64)
   INPUT_BOX_TOP_REST_OFFSET_Y: -58, // Sits flush on top edge of text input box
 
-  // Sprite Sheet Row Loop Speeds (CSS duration per 8-frame cycle)
+  // Sprite Sheet Row Loop Speeds (CSS duration per frame cycle)
   SPRITE_CYCLE_DURATIONS: {
     '--fps-idle': '0.85s',
     '--fps-run': '0.38s',
@@ -48,7 +48,7 @@ interface MascotOverlayProps {
   hasRootNode: boolean;
   activeHitlAgentId: string | null;
   failedAgentId: string | null;
-  onBuryComplete: () => void;
+  onBuryComplete: (buryClientPos: { x: number; y: number }) => void;
   onInspectFailedNode: (agentId: string) => void;
   onExpandFromKnock: () => void;
 }
@@ -112,9 +112,10 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
   onExpandFromKnock,
 }) => {
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: 380, y: 560 });
-  const [animState, setAnimState] = useState<MascotAnimationState>('idle');
+  const [animState, setAnimState] = useState<MascotAnimationState>('munching');
   const [flipX, setFlipX] = useState<boolean>(false);
   const [rotationDeg, setRotationDeg] = useState<number>(0);
+  const [acornImgError, setAcornImgError] = useState<boolean>(false);
 
   // Acorn Packaging + Simulated Z-Depth State
   const [acornProjectile, setAcornProjectile] = useState<{
@@ -130,7 +131,7 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
   // Mutable Physics Refs for RAF Loop
   const posRef = useRef<{ x: number; y: number }>({ x: 380, y: 560 });
   const waypointsRef = useRef<Waypoint[]>([]);
-  const lastTargetKeyRef = useRef<string>('init');
+  const lastTargetKeyRef = useRef<string>('home_rest');
   const wasPanningRef = useRef<boolean>(false);
   const isAcornSequenceActiveRef = useRef<boolean>(false);
   const isWaitingForRootNodeRef = useRef<boolean>(false);
@@ -186,7 +187,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
     const rightWallX =
       canvasRel.left + canvasRel.width - MASCOT_CONFIG.RIGHT_WALL_FLUSH_OFFSET;
 
-    // Pick whichever vertical bezel wall is closer to the destination
     const useLeftWall =
       Math.abs(destX - leftWallX) <= Math.abs(destX - rightWallX);
     const wallX = useLeftWall ? leftWallX : rightWallX;
@@ -194,26 +194,22 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
     const jumpIntoCanvasOffsetX = useLeftWall ? wallX + 36 : wallX - 36;
 
     return [
-      // 1. Run horizontally along current bezel to the flush vertical wall edge
       {
         x: wallX,
         y: startY,
         segment: carryingAcorn ? 'bezel_acorn' : 'bezel_run',
       },
-      // 2. Climb flush along the vertical bezel wall to match destination Y
       {
         x: wallX,
         y: destY,
         segment: 'bezel_climb',
         wallSide,
       },
-      // 3. Z-Axis Jump transition off the bezel into the 2D canvas plane
       {
         x: jumpIntoCanvasOffsetX,
         y: destY,
         segment: 'z_jump',
       },
-      // 4. Top-down canvas run to the exact node coordinate
       {
         x: destX,
         y: destY,
@@ -222,15 +218,16 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
     ];
   };
 
-  //Snap to Home on Initial Mount
+  // Snap to Home on Initial Mount in `munching` state
   useEffect(() => {
     const { homeX, homeY } = getLayoutMetrics();
     posRef.current = { x: homeX, y: homeY };
     setPos({ x: homeX, y: homeY });
+    setAnimState('munching');
   }, []);
 
   // =========================================================================
-  // 1. TASK INITIATION: VISIBLE PACKAGING + Z-DEPTH ACORN ARC + BURROWING
+  // 1. TASK INITIATION: SWITCH TO `idle` -> PACKAGING + Z-DEPTH ARC -> BURROW
   // =========================================================================
   useEffect(() => {
     if (burySequenceTrigger <= lastBuryTriggerRef.current) return;
@@ -242,9 +239,10 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
 
     const { canvasRel, homeX, homeY, inputCenterX, inputCenterY } = getLayoutMetrics();
 
-    // Ensure Byte is perched on top of the input box ready to catch
+    // Switch from `munching` to `idle` to wait for the thrown acorn
     posRef.current = { x: homeX, y: homeY };
     setPos({ x: homeX, y: homeY });
+    setRotationDeg(0);
     setAnimState('idle');
     setFlipX(true); // Face left toward the incoming acorn from input center
 
@@ -359,7 +357,7 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
       const { rootRect, canvasRel, homeX, homeY } = getLayoutMetrics();
       const targetAgentId = failedAgentId || activeHitlAgentId;
 
-      // No active blockers/faults -> Route back to Resting Spot on top of the Text Input Box
+      // No active blockers/faults -> Route back to Resting Spot and munch
       if (!targetAgentId) {
         if (lastTargetKeyRef.current !== 'home_rest' && waypointsRef.current.length === 0) {
           lastTargetKeyRef.current = 'home_rest';
@@ -374,7 +372,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
             const wallX = useLeftWall ? leftWallX : rightWallX;
 
             waypointsRef.current = [
-              // Run across canvas to nearest bezel wall, climb down to input dock, run to rest spot
               { x: wallX, y: posRef.current.y, segment: 'canvas_run' },
               {
                 x: wallX,
@@ -385,7 +382,7 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
               { x: homeX, y: homeY, segment: 'bezel_run' },
             ];
           } else {
-            setAnimState('idle');
+            setAnimState('munching');
             setRotationDeg(0);
           }
         }
@@ -403,7 +400,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
       const rawX = nodeRect.left - rootRect.left + nodeRect.width * 0.5 - 32;
       const rawY = nodeRect.top - rootRect.top - 42;
 
-      // Off-Screen Check
       const isOffScreen =
         rawX < canvasRel.left ||
         rawX > canvasRel.right ||
@@ -417,7 +413,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
         clampedY / 8
       )}_${isOffScreen ? 'off' : 'in'}`;
 
-      // Just released canvas pan -> Sprint directly across canvas to catch back up with node
       if (wasPanningRef.current) {
         wasPanningRef.current = false;
         lastTargetKeyRef.current = targetKey;
@@ -436,7 +431,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
         const dist = Math.hypot(clampedX - posRef.current.x, clampedY - posRef.current.y);
         if (dist < 10) return;
 
-        // If resting on the input box bezel, use flush Border-to-Canvas path
         const isAtBottomRest = Math.abs(posRef.current.y - homeY) < 28;
         if (isAtBottomRest && !isOffScreen) {
           waypointsRef.current = buildFlushBorderToCanvasPath(
@@ -485,7 +479,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
 
         const stepDist = speed * dt;
 
-        // Map segment type to the 12-row Sprite Sheet state + transform rules
         if (wp.segment === 'canvas_run' || wp.segment === 'canvas_acorn' || wp.segment === 'z_jump') {
           const nextState: MascotAnimationState =
             wp.segment === 'z_jump'
@@ -496,9 +489,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
           setAnimState(nextState);
           setFlipX(false);
 
-          // Base sprite for rows 4, 5, 6 faces DOWN (+Y = 0deg).
-          // atan2(dy, dx) gives +90deg for Down (+Y), so subtract 90deg:
-          // Down (+Y) -> 0deg | Left (-X) -> 90deg | Up (-Y) -> 180deg | Right (+X) -> -90deg
           if (dist > 0.5) {
             const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI - 90;
             setRotationDeg(angleDeg);
@@ -506,7 +496,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
         } else if (wp.segment === 'bezel_climb') {
           setAnimState('climbing');
           setRotationDeg(0);
-          // Flush wall orientation: right wall = normal (false), left wall = flipped (true)
           setFlipX(wp.wallSide === 'left');
         } else {
           setAnimState(wp.segment === 'bezel_acorn' ? 'running_acorn_bezel' : 'running');
@@ -517,7 +506,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
         }
 
         if (dist <= stepDist) {
-          // Instantaneous arrival at waypoint
           posRef.current = { x: wp.x, y: wp.y };
           setPos({ x: wp.x, y: wp.y });
           waypointsRef.current.shift();
@@ -526,26 +514,33 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
             setRotationDeg(0);
 
             if (isAcornSequenceActiveRef.current) {
-              // Reached canvas center -> Start `burying` (Row 8)
               setAnimState('burying');
               setFlipX(false);
-              setDirtMoundCoord({ x: wp.x + 18, y: wp.y + 48 });
+
+              const moundRelX = wp.x + 32;
+              const moundRelY = wp.y + 48;
+              setDirtMoundCoord({ x: moundRelX, y: moundRelY });
               isWaitingForRootNodeRef.current = true;
 
-              // Signal parent to spawn root Orchestrator node after digging
+              const { rootRect } = getLayoutMetrics();
+              const buryClientPos = {
+                x: rootRect.left + moundRelX,
+                y: rootRect.top + moundRelY,
+              };
+
               setTimeout(() => {
-                onBuryComplete();
+                onBuryComplete(buryClientPos);
               }, MASCOT_CONFIG.BURY_DURATION_BEFORE_SPAWN_MS);
             } else if (failedAgentId) {
               setAnimState('inspecting');
             } else if (activeHitlAgentId) {
               setAnimState('pointing');
             } else {
-              setAnimState('idle');
+              // Back at resting spot with nothing to do -> munch on an acorn
+              setAnimState('munching');
             }
           }
         } else {
-          // Constant-velocity linear step
           const vx = (dx / dist) * stepDist;
           const vy = (dy / dist) * stepDist;
           posRef.current = { x: posRef.current.x + vx, y: posRef.current.y + vy };
@@ -572,7 +567,6 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
   const isClickable =
     (animState === 'inspecting' && failedAgentId) || isMinimized;
 
-  // Compose CSS Transform: Top-Down states use `rotate()`, Bezel/Side states use `scaleX()`
   const spriteTransform = TOP_DOWN_ROTATED_STATES.has(animState)
     ? `translate3d(${Math.round(pos.x)}px, ${Math.round(pos.y)}px, 0) rotate(${Math.round(
         rotationDeg
@@ -586,7 +580,7 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
       style={MASCOT_CONFIG.SPRITE_CYCLE_DURATIONS}
       className="pointer-events-none absolute inset-0 z-50 overflow-visible"
     >
-      {/* Pixelated Acorn Projectile with Simulated Z-Depth Scaling */}
+      {/* Acorn Projectile: Uses public/sprites/acorn.png with Z-Depth Scaling */}
       {acornProjectile.visible && (
         <div
           className="absolute z-50 origin-center"
@@ -596,30 +590,32 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
             )}px, 0) scale(${acornProjectile.scale.toFixed(2)})`,
           }}
         >
-          <div
-            className={`flex items-center justify-center rounded-full ${
-              acornProjectile.packaging
-                ? 'bg-[#FF6B00]/20 p-1.5 ring-1 ring-[#FF6B00]'
-                : ''
-            }`}
-          >
+          {!acornImgError ? (
+            <img
+              src="/sprites/acorn.png"
+              alt="Acorn"
+              onError={() => setAcornImgError(true)}
+              style={{ imageRendering: 'pixelated' }}
+              className="h-8 w-8 object-contain select-none"
+              draggable={false}
+            />
+          ) : (
             <svg width="24" height="24" viewBox="0 0 16 16" fill="none">
               <path d="M3 6C3 3.5 5.5 2 8 2C10.5 2 13 3.5 13 6H3Z" fill="#71717A" />
               <rect x="7" y="0" width="2" height="2" fill="#E4E4E7" />
               <path d="M4 6H12L10.5 13L8 15L5.5 13L4 6Z" fill="#FF6B00" />
             </svg>
-          </div>
+          )}
         </div>
       )}
 
       {/* Dirt Mound while Burying Acorn at Canvas Center */}
       {dirtMoundCoord && (
         <div
-          className="absolute z-40 flex items-center justify-center"
+          className="absolute z-40 flex -translate-x-1/2 -translate-y-1/2 items-center justify-center"
           style={{
-            transform: `translate3d(${Math.round(dirtMoundCoord.x)}px, ${Math.round(
-              dirtMoundCoord.y
-            )}px, 0)`,
+            left: `${Math.round(dirtMoundCoord.x)}px`,
+            top: `${Math.round(dirtMoundCoord.y)}px`,
           }}
         >
           <div className="h-3 w-8 rounded-full bg-[#FF6B00]/40 blur-[2px] animate-ping" />

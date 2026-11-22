@@ -145,3 +145,25 @@
 .peekaboo-bar-alert {
   animation: bar-hitl-pulse 1.2s ease-in-out infinite;
 }
+
+/* Branching Root Growth Animations on Node Spawn */
+@keyframes root-grow {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.root-branch-main {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: root-grow 0.62s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.root-branch-tendril {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: root-grow 0.36s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}

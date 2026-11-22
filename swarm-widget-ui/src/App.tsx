@@ -59,6 +59,7 @@ export const App: React.FC = () => {
   const [attachments, setAttachments] = useState<string[]>(['src/auth/jwt.py']);
   const [isPromptCollapsedToAcorn, setIsPromptCollapsedToAcorn] = useState(false);
   const [burySequenceTrigger, setBurySequenceTrigger] = useState(0);
+  const [rootSpawnClientPos, setRootSpawnClientPos] = useState<{ x: number; y: number } | null>(null);
   const pendingPromptRef = useRef<{ prompt: string; attachments: string[] } | null>(null);
 
   // Explicit Left-Edge Coordinate Anchor (Opening the drawer only expands the right edge outward)
@@ -148,7 +149,8 @@ export const App: React.FC = () => {
   };
 
   // Step 2: Callback fired by MascotOverlay ONLY after Byte finishes burying the acorn at canvas center
-  const handleAcornBuryComplete = useCallback(() => {
+  const handleAcornBuryComplete = useCallback((buryClientPos: { x: number; y: number }) => {
+    setRootSpawnClientPos(buryClientPos);
     setIsPromptCollapsedToAcorn(false);
     if (pendingPromptRef.current) {
       swarmBridge.deploySwarm(
@@ -395,6 +397,7 @@ export const App: React.FC = () => {
                   <SwarmCanvas
                     agents={agents}
                     selectedAgentId={selectedAgentId}
+                    rootSpawnClientPos={rootSpawnClientPos}
                     onSelectAgent={handleSelectAgentOnCanvas}
                     onPanStateChange={setIsCanvasPanning}
                   />
