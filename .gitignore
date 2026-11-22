@@ -16,7 +16,6 @@ logs/*
 !logs/.gitkeep
 !launchd/.gitkeep
 prompts/agents_prompt_history
-AGENTS.md
 chats/*
 !chats/.gitkeep
 
