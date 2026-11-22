@@ -6,6 +6,9 @@ import {
   Terminal,
   Plus,
   GripHorizontal,
+  FolderOpen,
+  Check,
+  X,
 } from 'lucide-react';
 import {
   AgentNodeData,
@@ -26,11 +29,31 @@ import './styles/mascot.css';
 const MAIN_COLUMN_WIDTH = 920;
 const DRAWER_WIDTH = 400;
 
+const postNativeWindowMsg = (payload: Record<string, unknown>) => {
+  const handler = (
+    window as unknown as {
+      webkit?: { messageHandlers?: { windowBridge?: { postMessage: (msg: string) => void } } };
+    }
+  ).webkit?.messageHandlers?.windowBridge;
+  if (handler) {
+    handler.postMessage(JSON.stringify(payload));
+    return true;
+  }
+  return false;
+};
+
+const isNativeWindow =
+  typeof window !== 'undefined' &&
+  Boolean(
+    (window as unknown as { webkit?: { messageHandlers?: { windowBridge?: unknown } } }).webkit
+      ?.messageHandlers?.windowBridge
+  );
+
 export const App: React.FC = () => {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [currentSession, setCurrentSession] = useState<SessionSummary>({
-    chat_id: 'chat_new',
-    title: 'Autonomous Session',
+    chat_id: '',
+    title: 'New Session',
     workspace_root: '~/dev/local-swarm',
     overall_status: 'Idle',
     total_cost_usd: 0.0,
@@ -52,77 +75,125 @@ export const App: React.FC = () => {
   const [showReportModal, setShowReportModal] = useState(false);
   const [isCanvasPanning, setIsCanvasPanning] = useState(false);
 
+  // Workspace Editing State
+  const [isEditingWorkspace, setIsEditingWorkspace] = useState(false);
+  const [workspaceDraft, setWorkspaceDraft] = useState('');
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+
   // Task Initiation & Acorn Collapse States
   const [promptText, setPromptText] = useState(
-    'Refactor authentication middleware to rotate JWT refresh tokens and verify with pytest.'
+    ''
   );
-  const [attachments, setAttachments] = useState<string[]>(['src/auth/jwt.py']);
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [isPromptCollapsedToAcorn, setIsPromptCollapsedToAcorn] = useState(false);
   const [burySequenceTrigger, setBurySequenceTrigger] = useState(0);
-  const [rootSpawnClientPos, setRootSpawnClientPos] = useState<{ x: number; y: number } | null>(null);
-  const pendingPromptRef = useRef<{ prompt: string; attachments: string[] } | null>(null);
+  const [rootSpawnClientPos, setRootSpawnClientPos] = useState<{ x: number; y: number } | null>(
+    null
+  );
 
-  // Explicit Left-Edge Coordinate Anchor (Opening the drawer only expands the right edge outward)
+  // Event Buffer: Agents start immediately on Deploy; events buffer until Byte finishes burying the acorn
+  const isAwaitingBuryRef = useRef<boolean>(false);
+  const bufferedEventsRef = useRef<SwarmSocketEvent[]>([]);
+  const flushTimersRef = useRef<number[]>([]);
+
+  // Browser-preview floating window drag state (unused in native macOS window mode)
   const [windowPos, setWindowPos] = useState<{ x: number; y: number }>({ x: 80, y: 60 });
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
     null
   );
+
   const hasRootNode = agents.some((a) => a.type === 'Main');
+
+  const clearFlushTimers = useCallback(() => {
+    flushTimersRef.current.forEach((id) => window.clearTimeout(id));
+    flushTimersRef.current = [];
+  }, []);
+
+  const applySwarmEvent = useCallback((event: SwarmSocketEvent) => {
+    switch (event.type) {
+      case 'SESSION_UPDATED':
+        setCurrentSession((prev) => ({ ...prev, ...event.payload }));
+        break;
+      case 'AGENT_SPAWNED':
+        setAgents((prev) =>
+          prev.some((a) => a.agent_id === event.payload.agent_id)
+            ? prev
+            : [...prev, event.payload]
+        );
+        break;
+      case 'AGENT_UPDATED':
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.agent_id === event.payload.agent_id ? { ...a, ...event.payload } : a
+          )
+        );
+        break;
+      case 'COMMAND_LOGGED':
+        setLogs((prev) => [...prev, event.payload]);
+        break;
+      case 'HITL_REQUIRED':
+        setBlockers((prev) => [...prev, event.payload]);
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.agent_id === event.payload.agent_id
+              ? { ...a, status: 'waiting', active_blocker: event.payload }
+              : a
+          )
+        );
+        break;
+      case 'HITL_RESOLVED':
+        setBlockers((prev) => prev.filter((b) => b.blocker_id !== event.payload.blocker_id));
+        setAgents((prev) =>
+          prev.map((a) =>
+            a.agent_id === event.payload.agent_id
+              ? { ...a, status: 'executing', active_blocker: null }
+              : a
+          )
+        );
+        break;
+      case 'ANALYZER_REPORT':
+        setAnalyzerReport(event.payload);
+        setShowReportModal(true);
+        break;
+    }
+  }, []);
 
   useEffect(() => {
     swarmBridge.fetchSessions().then(setSessions).catch(console.error);
+    swarmBridge
+      .fetchConfig()
+      .then((cfg) => {
+        setCurrentSession((prev) => ({
+          ...prev,
+          workspace_root: cfg.workspace_root,
+          chroma_status: cfg.chroma_status,
+          connected_tools: cfg.connected_tools,
+        }));
+      })
+      .catch(console.error);
 
     const unsubscribe = swarmBridge.connect((event: SwarmSocketEvent) => {
-      switch (event.type) {
-        case 'SESSION_UPDATED':
-          setCurrentSession((prev) => ({ ...prev, ...event.payload }));
-          break;
-        case 'AGENT_SPAWNED':
-          setAgents((prev) =>
-            prev.some((a) => a.agent_id === event.payload.agent_id)
-              ? prev
-              : [...prev, event.payload]
-          );
-          break;
-        case 'AGENT_UPDATED':
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.agent_id === event.payload.agent_id ? { ...a, ...event.payload } : a
-            )
-          );
-          break;
-        case 'COMMAND_LOGGED':
-          setLogs((prev) => [...prev, event.payload]);
-          break;
-        case 'HITL_REQUIRED':
-          setBlockers((prev) => [...prev, event.payload]);
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.agent_id === event.payload.agent_id
-                ? { ...a, status: 'waiting', active_blocker: event.payload }
-                : a
-            )
-          );
-          break;
-        case 'HITL_RESOLVED':
-          setBlockers((prev) => prev.filter((b) => b.blocker_id !== event.payload.blocker_id));
-          setAgents((prev) =>
-            prev.map((a) =>
-              a.agent_id === event.payload.agent_id
-                ? { ...a, status: 'executing', active_blocker: null }
-                : a
-            )
-          );
-          break;
-        case 'ANALYZER_REPORT':
-          setAnalyzerReport(event.payload);
-          setShowReportModal(true);
-          break;
+      if (isAwaitingBuryRef.current) {
+        bufferedEventsRef.current.push(event);
+      } else {
+        applySwarmEvent(event);
       }
     });
 
-    return () => unsubscribe();
-  }, []);
+    return () => {
+      unsubscribe();
+      clearFlushTimers();
+    };
+  }, [applySwarmEvent, clearFlushTimers]);
+
+  // Expand native macOS window strictly to the right when Terminal Drawer toggles
+  useEffect(() => {
+    if (!isNativeWindow) return;
+    postNativeWindowMsg({
+      type: 'resize_right',
+      width: MAIN_COLUMN_WIDTH + (isDrawerOpen ? DRAWER_WIDTH : 0),
+    });
+  }, [isDrawerOpen]);
 
   const completedCount = agents.filter((a) => a.status === 'completed').length;
   const progressPercent =
@@ -132,34 +203,115 @@ export const App: React.FC = () => {
   const failedAgent = agents.find((a) => a.status === 'failed') || null;
   const selectedAgent = agents.find((a) => a.agent_id === selectedAgentId) || null;
 
-  // Step 1: User clicks "Deploy Swarm" -> Collapse input box into acorn & trigger Byte
+  const handleCreateNewSession = async () => {
+    clearFlushTimers();
+    isAwaitingBuryRef.current = false;
+    bufferedEventsRef.current = [];
+
+    const fresh = await swarmBridge.createNewSession();
+    setCurrentSession(fresh);
+    setAgents([]);
+    setLogs([]);
+    setBlockers([]);
+    setAnalyzerReport(null);
+    setSelectedAgentId(null);
+    setRootSpawnClientPos(null);
+    setIsDrawerOpen(false);
+    swarmBridge.fetchSessions().then(setSessions).catch(console.error);
+  };
+
+  const handleApplyWorkspace = async () => {
+    if (!workspaceDraft.trim()) return;
+    try {
+      setWorkspaceError(null);
+      const res = await swarmBridge.setWorkspace(workspaceDraft.trim());
+      setCurrentSession((prev) => ({ ...prev, workspace_root: res.workspace_root }));
+      setIsEditingWorkspace(false);
+    } catch (err) {
+      setWorkspaceError(err instanceof Error ? err.message : 'Invalid directory');
+    }
+  };
+
+  const handleBrowseWorkspace = async () => {
+    try {
+      setWorkspaceError(null);
+      const res = await swarmBridge.pickWorkspace();
+      if (!res.cancelled) {
+        setCurrentSession((prev) => ({ ...prev, workspace_root: res.workspace_root }));
+        setIsEditingWorkspace(false);
+      }
+    } catch (err) {
+      setWorkspaceError(err instanceof Error ? err.message : 'Picker failed');
+    }
+  };
+
+  // Step 1: Fire agent logic IMMEDIATELY on Deploy Swarm, while buffering UI updates until Byte buries the acorn
   const handleDeploySwarm = (e: React.FormEvent) => {
     e.preventDefault();
     if (!promptText.trim() || isPromptCollapsedToAcorn) return;
+
+    clearFlushTimers();
+    bufferedEventsRef.current = [];
+    isAwaitingBuryRef.current = true;
 
     setAgents([]);
     setLogs([]);
     setBlockers([]);
     setAnalyzerReport(null);
     setHighlightErrorInDrawer(false);
-
-    pendingPromptRef.current = { prompt: promptText, attachments: [...attachments] };
     setIsPromptCollapsedToAcorn(true);
     setBurySequenceTrigger((c) => c + 1);
+
+    // Start the backend swarm immediately in the background
+    swarmBridge
+      .deploySwarm(promptText, [...attachments], {
+        workspace_root: currentSession.workspace_root,
+        chat_id: currentSession.chat_id || undefined,
+      })
+      .then(() => swarmBridge.fetchSessions().then(setSessions).catch(() => {}))
+      .catch(console.error);
   };
 
-  // Step 2: Callback fired by MascotOverlay ONLY after Byte finishes burying the acorn at canvas center
-  const handleAcornBuryComplete = useCallback((buryClientPos: { x: number; y: number }) => {
-    setRootSpawnClientPos(buryClientPos);
-    setIsPromptCollapsedToAcorn(false);
-    if (pendingPromptRef.current) {
-      swarmBridge.deploySwarm(
-        pendingPromptRef.current.prompt,
-        pendingPromptRef.current.attachments
-      );
-      pendingPromptRef.current = null;
-    }
-  }, []);
+  // Step 2: Acorn is buried -> Pop up Main Orchestrator at burial spot, then smoothly flush buffered events
+  const handleAcornBuryComplete = useCallback(
+    (buryClientPos: { x: number; y: number }) => {
+      setRootSpawnClientPos(buryClientPos);
+      setIsPromptCollapsedToAcorn(false);
+      isAwaitingBuryRef.current = false;
+
+      const queued = [...bufferedEventsRef.current];
+      bufferedEventsRef.current = [];
+
+      // Separate immediate root/session events from subsequent background activity
+      const immediate: SwarmSocketEvent[] = [];
+      const staggered: SwarmSocketEvent[] = [];
+
+      queued.forEach((ev) => {
+        if (
+          ev.type === 'SESSION_UPDATED' ||
+          (ev.type === 'AGENT_SPAWNED' && ev.payload.type === 'Main')
+        ) {
+          immediate.push(ev);
+        } else {
+          staggered.push(ev);
+        }
+      });
+
+      // Pop up Main Orchestrator immediately at the exact acorn burial coordinate
+      immediate.forEach((ev) => applySwarmEvent(ev));
+
+      // Smoothly replay any background work that already occurred while the acorn was being buried
+      let cumulativeDelay = 180;
+      staggered.forEach((ev) => {
+        const timerId = window.setTimeout(() => {
+          applySwarmEvent(ev);
+        }, cumulativeDelay);
+        flushTimersRef.current.push(timerId);
+        cumulativeDelay += ev.type === 'AGENT_SPAWNED' ? 200 : 75;
+      });
+    },
+    [applySwarmEvent]
+  );
 
   const handleSelectAgentOnCanvas = (agentId: string) => {
     setSelectedAgentId(agentId);
@@ -183,7 +335,9 @@ export const App: React.FC = () => {
   };
 
   const handleDragMouseDown = (e: React.MouseEvent) => {
+    if (isNativeWindow) return; // Native macOS titlebar handles window dragging
     if ((e.target as HTMLElement).closest('button, input, textarea')) return;
+
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
@@ -206,34 +360,39 @@ export const App: React.FC = () => {
     window.addEventListener('mouseup', onUp);
   };
 
+  const rootStyle: React.CSSProperties = isNativeWindow
+    ? {
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+      }
+    : {
+        position: 'fixed',
+        left: `${windowPos.x}px`,
+        top: `${isMinimized ? Math.max(72, windowPos.y) : windowPos.y}px`,
+        width: isMinimized
+          ? '360px'
+          : `${MAIN_COLUMN_WIDTH + (isDrawerOpen ? DRAWER_WIDTH : 0)}px`,
+        height: isMinimized ? '10px' : '680px',
+      };
+
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-[#060608] text-zinc-100 select-none">
-      {/* =====================================================================
-          LEFT-ANCHORED FLOATING OS WIDGET
-          Opening the drawer expands width from 920px -> 1320px strictly to the right.
-          ===================================================================== */}
+    <div className="relative h-screen w-screen overflow-hidden bg-[#0A0A0C] text-zinc-100 select-none">
       <div
         id="swarm-widget-root"
-        style={{
-          position: 'fixed',
-          left: `${windowPos.x}px`,
-          top: `${isMinimized ? Math.max(72, windowPos.y) : windowPos.y}px`,
-          width: isMinimized
-            ? '360px'
-            : `${MAIN_COLUMN_WIDTH + (isDrawerOpen ? DRAWER_WIDTH : 0)}px`,
-          height: isMinimized ? '10px' : '680px',
-        }}
-        className={` flex flex-col ${
-          isMinimized
+        style={rootStyle}
+        className={`flex flex-col ${
+          !isNativeWindow && isMinimized
             ? `overflow-visible rounded-full border border-zinc-700 bg-[#111114] ${
                 activeHitlAgentId || failedAgent ? 'peekaboo-bar-alert' : ''
               }`
+            : isNativeWindow
+            ? 'overflow-hidden bg-[#0A0A0C]'
             : 'overflow-visible rounded-2xl border border-zinc-800 bg-[#0A0A0C] shadow-[0_25px_70px_rgba(0,0,0,0.95)]'
         }`}
       >
-        {/* Persistent Mascot Physics Layer */}
         <MascotOverlay
-          isMinimized={isMinimized}
+          isMinimized={!isNativeWindow && isMinimized}
           isCanvasPanning={isCanvasPanning}
           burySequenceTrigger={burySequenceTrigger}
           hasRootNode={hasRootNode}
@@ -244,11 +403,7 @@ export const App: React.FC = () => {
           onExpandFromKnock={handleExpandFromKnock}
         />
 
-        {/* ===================================================================
-            VIEW STATE 1: MINIMIZED — Exclusively a Slim Progress Bar
-            (Byte sits flush on top of this bar via y: -56px)
-            =================================================================== */}
-        {isMinimized ? (
+        {!isNativeWindow && isMinimized ? (
           <div
             onMouseDown={handleDragMouseDown}
             onClick={handleExpandFromKnock}
@@ -261,21 +416,25 @@ export const App: React.FC = () => {
             />
           </div>
         ) : (
-          /* ===================================================================
-             VIEW STATE 2: EXPANDED COMMAND CENTER
-             =================================================================== */
-          <div className="flex h-full w-full overflow-hidden rounded-2xl">
-            {/* Fixed-Width Left Main Column (920px) — Never shifts when Drawer opens */}
+          <div
+            className={`flex h-full w-full overflow-hidden ${
+              isNativeWindow ? '' : 'rounded-2xl'
+            }`}
+          >
             <div
-              style={{ width: `${MAIN_COLUMN_WIDTH}px` }}
-              className="flex h-full shrink-0 flex-col overflow-hidden"
+              style={isNativeWindow ? undefined : { width: `${MAIN_COLUMN_WIDTH}px` }}
+              className={`flex h-full flex-col overflow-hidden ${
+                isNativeWindow ? 'flex-1 min-w-0' : 'shrink-0'
+              }`}
             >
               {/* Minimal Monochrome Top Bar */}
               <header
                 onMouseDown={handleDragMouseDown}
-                className="flex h-11 shrink-0 cursor-grab items-center justify-between border-b border-zinc-800/80 bg-[#0A0A0C] px-3.5 active:cursor-grabbing"
+                className={`flex h-11 shrink-0 items-center justify-between border-b border-zinc-800/80 bg-[#0A0A0C] px-3.5 ${
+                  isNativeWindow ? '' : 'cursor-grab active:cursor-grabbing'
+                }`}
               >
-                <div className="flex items-center gap-2.5">
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                     className={`rounded p-1.5 transition ${
@@ -287,16 +446,89 @@ export const App: React.FC = () => {
                   >
                     <History className="h-3.5 w-3.5" />
                   </button>
-                  <span className="font-mono text-[11px] text-zinc-400">
-                    {currentSession.workspace_root}
-                  </span>
+
+                  <button
+                    onClick={handleCreateNewSession}
+                    className="rounded p-1.5 text-zinc-500 transition hover:bg-zinc-800 hover:text-[#FF6B00]"
+                    title="New Session"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+
+                  {isEditingWorkspace ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={workspaceDraft}
+                        onChange={(e) => setWorkspaceDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleApplyWorkspace();
+                          if (e.key === 'Escape') setIsEditingWorkspace(false);
+                        }}
+                        placeholder="/path/to/workspace"
+                        className="h-6 w-56 rounded border border-zinc-700 bg-[#111114] px-2 font-mono text-[11px] text-white focus:border-[#FF6B00] focus:outline-none"
+                      />
+                      <button
+                        onClick={handleApplyWorkspace}
+                        className="rounded p-1 text-zinc-300 hover:bg-zinc-800 hover:text-[#FF6B00]"
+                        title="Apply directory"
+                      >
+                        <Check className="h-3 w-3" />
+                      </button>
+                      <button
+                        onClick={handleBrowseWorkspace}
+                        className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                        title="Browse in Finder"
+                      >
+                        <FolderOpen className="h-3 w-3" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsEditingWorkspace(false);
+                          setWorkspaceError(null);
+                        }}
+                        className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-white"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                      {workspaceError && (
+                        <span className="font-mono text-[10px] text-[#a85454]">
+                          {workspaceError}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => {
+                          setWorkspaceDraft(currentSession.workspace_root);
+                          setWorkspaceError(null);
+                          setIsEditingWorkspace(true);
+                        }}
+                        className="max-w-[260px] truncate rounded px-1.5 py-0.5 font-mono text-[11px] text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100"
+                        title="Click to edit working directory"
+                      >
+                        {currentSession.workspace_root}
+                      </button>
+                      <button
+                        onClick={handleBrowseWorkspace}
+                        className="rounded p-1 text-zinc-600 transition hover:bg-zinc-900 hover:text-zinc-200"
+                        title="Choose working directory in Finder"
+                      >
+                        <FolderOpen className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                <div className="flex items-center gap-1 text-zinc-700">
-                  <GripHorizontal className="h-3.5 w-3.5" />
-                </div>
+                {!isNativeWindow && (
+                  <div className="flex items-center gap-1 text-zinc-700">
+                    <GripHorizontal className="h-3.5 w-3.5" />
+                  </div>
+                )}
 
-                <div className="flex items-center gap-2 pr-14">
+                <div className="flex items-center gap-2 pr-2">
                   {blockers.length > 0 && (
                     <button
                       onClick={() => {
@@ -321,17 +553,19 @@ export const App: React.FC = () => {
                     <Terminal className="h-3.5 w-3.5" />
                   </button>
 
-                  <button
-                    onClick={() => setIsMinimized(true)}
-                    className="rounded p-1.5 text-zinc-500 transition hover:text-zinc-200"
-                    title="Minimize to Slim Progress Bar"
-                  >
-                    <Minimize2 className="h-3.5 w-3.5" />
-                  </button>
+                  {!isNativeWindow && (
+                    <button
+                      onClick={() => setIsMinimized(true)}
+                      className="rounded p-1.5 text-zinc-500 transition hover:text-zinc-200"
+                      title="Minimize to Slim Progress Bar"
+                    >
+                      <Minimize2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
               </header>
 
-              {/* Simulation Harness */}
+              {/* Simulation Harness (only renders in mock mode) */}
               <DevTestControls
                 onForceMinimizeWithHitl={() => {
                   setIsMinimized(true);
@@ -351,7 +585,7 @@ export const App: React.FC = () => {
                 }}
               />
 
-              {/* Canvas + Optional Collapsible History Sidebar */}
+              {/* Canvas + Collapsible History Sidebar */}
               <div className="relative flex flex-1 overflow-hidden">
                 {isSidebarOpen && (
                   <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-800 bg-[#0d0d10]">
@@ -360,14 +594,10 @@ export const App: React.FC = () => {
                         Sessions
                       </span>
                       <button
-                        onClick={() => {
-                          setAgents([]);
-                          setLogs([]);
-                          setBlockers([]);
-                        }}
+                        onClick={handleCreateNewSession}
                         className="flex items-center gap-1 font-mono text-[10px] text-zinc-300 hover:text-[#FF6B00]"
                       >
-                        <Plus className="h-3 w-3" /> Reset
+                        <Plus className="h-3 w-3" /> New
                       </button>
                     </div>
                     <div className="flex-1 space-y-1 overflow-y-auto p-2">
@@ -375,12 +605,21 @@ export const App: React.FC = () => {
                         <button
                           key={s.chat_id}
                           onClick={async () => {
+                            clearFlushTimers();
+                            isAwaitingBuryRef.current = false;
+                            bufferedEventsRef.current = [];
                             const data = await swarmBridge.loadSession(s.chat_id);
+                            setRootSpawnClientPos(null);
                             setCurrentSession(data.session);
                             setAgents(data.agents);
                             setLogs(data.logs);
+                            setBlockers([]);
                           }}
-                          className="w-full rounded-lg border border-zinc-800/60 bg-[#111114] p-2 text-left hover:border-zinc-700"
+                          className={`w-full rounded-lg border p-2 text-left transition ${
+                            currentSession.chat_id === s.chat_id
+                              ? 'border-[#FF6B00]/60 bg-[#161412]'
+                              : 'border-zinc-800/60 bg-[#111114] hover:border-zinc-700'
+                          }`}
                         >
                           <p className="line-clamp-1 text-xs text-zinc-200">{s.title}</p>
                           <div className="mt-1 flex justify-between font-mono text-[10px] text-zinc-500">
@@ -404,7 +643,7 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Bottom Task Input Dock (Visually collapses into an acorn on Deploy) */}
+              {/* Bottom Task Input Dock */}
               <div
                 data-mascot-target="task-input-box"
                 className="border-t border-zinc-800/80 bg-[#0A0A0C] px-4 py-3"
@@ -472,7 +711,6 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Outward Right-Expanding Terminal Drawer (400px) */}
             <TerminalDrawer
               isOpen={isDrawerOpen}
               selectedAgent={selectedAgent}

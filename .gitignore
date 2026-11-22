@@ -47,3 +47,4 @@ launchd/*.plist
 node_modules
 
 chrome_profile/
+dist/

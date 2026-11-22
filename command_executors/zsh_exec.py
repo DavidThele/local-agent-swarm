@@ -1,6 +1,7 @@
 import shlex
 import subprocess
 from pathlib import Path
+from infrastructure import ui_bridge
 from infrastructure.logging import log
 from infrastructure.concurrency import TERMINAL_LOCK
 
@@ -62,7 +63,6 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
     if not command_args:
         return "[Error] No command provided."
 
-    # Resolve the global workspace path
     whitelist_path = resolve_security_file("cmd_whitelist.md")
     blacklist_path = resolve_security_file("cmd_blacklist.md")
 
@@ -77,19 +77,30 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
 
     # Check Greylist (Command not explicitly whitelisted)
     elif base_cmd not in WHITELIST:
-        with TERMINAL_LOCK:
-            approval = input(
-                f"\n[SECURITY ALERT] Command '{base_cmd}' is not whitelisted. Approve execution?\n"
-                f"Command: {cmd_string}\n(Y/N): "
+        if ui_bridge.is_ui_active():
+            res = ui_bridge.request_hitl(
+                agent_id=context_state.get("worker_id", "worker"),
+                blocker_type="Security",
+                prompt_text=f"Command '{base_cmd}' is not in cmd_whitelist.md. Approve execution?",
+                command_preview=cmd_string,
             )
-        if approval.strip().lower() != "y":
-            return "[System] Command execution denied by user."
+            if res.get("action") != "approve":
+                return "[System] Command execution denied by user."
+        else:
+            with TERMINAL_LOCK:
+                approval = input(
+                    f"\n[SECURITY ALERT] Command '{base_cmd}' is not whitelisted. Approve execution?\n"
+                    f"Command: {cmd_string}\n(Y/N): "
+                )
+            if approval.strip().lower() != "y":
+                return "[System] Command execution denied by user."
 
-    # Execute
+    # Execute inside the active workspace_root
     try:
         result = subprocess.run(
             command_args,
             shell=False,
+            cwd=context_state.get("workspace_root") or None,
             capture_output=True,
             text=True,
             timeout=timeout

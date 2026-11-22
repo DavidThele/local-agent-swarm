@@ -1,3 +1,4 @@
+from infrastructure import ui_bridge
 from infrastructure.workspace import rename_chat_instance
 
 
@@ -21,5 +22,7 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
     context_state["local_chat_dir"] = str(new_dir)
     context_state["chat_id"] = new_slug
     context_state["request_chat_title"] = False
+
+    ui_bridge.emit("SESSION_UPDATED", {"chat_id": new_slug, "title": raw_title})
 
     return f"[Success] Chat directory renamed to '{new_slug}'."

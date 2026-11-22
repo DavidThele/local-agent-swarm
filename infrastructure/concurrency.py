@@ -30,6 +30,7 @@ def spawn_background_agent(
         "local_chat_dir": parent_context_state.get("local_chat_dir", ".agents/chats/default"),
         "workspace_root": parent_context_state.get("workspace_root"),
         "worker_id": agent_id,
+        "parent_agent_id": parent_context_state.get("worker_id", "main"),
         "notification_queue": queue.Queue(),
         "active_children": {}
     }

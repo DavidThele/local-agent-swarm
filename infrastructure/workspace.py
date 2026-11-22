@@ -20,7 +20,20 @@ def request_file_access(
     operation: str,
     path: Path,
     diff_provider=None,
+    agent_id: str = "worker",
 ) -> bool:
+    from infrastructure import ui_bridge
+
+    if ui_bridge.is_ui_active():
+        diff_preview = diff_provider() if diff_provider is not None else str(path)
+        res = ui_bridge.request_hitl(
+            agent_id=agent_id,
+            blocker_type="Security",
+            prompt_text=f"{operation.upper()} request outside authorized workspace: {path}",
+            command_preview=diff_preview[:1200],
+        )
+        return res.get("action") == "approve"
+
     from infrastructure.concurrency import TERMINAL_LOCK
 
     with TERMINAL_LOCK:
@@ -80,34 +93,31 @@ def init_global_workspace() -> Path:
             
     return global_root
 
-def create_chat_instance(chat_id: str = '') -> tuple[str, Path]:
+def create_chat_instance(
+    chat_id: str = "",
+    workspace_root: str | Path | None = None,
+) -> tuple[str, Path]:
     """
-    Creates a new isolated subdirectory for a chat instance in the CURRENT working directory.
-    Then, creates a symlink to this local chat directory in the global ~/.agents/chats/ folder.
-    
-    Returns:
-        tuple containing the (chat_id, Path_object of the local chat directory)
+    Creates a new isolated subdirectory for a chat instance in the target working directory
+    (defaults to Path.cwd()). Then creates a symlink in ~/.agents/chats/.
     """
     global_root = init_global_workspace()
     global_chats_dir = global_root / "chats"
     
     # Generate a short, collision-resistant ID for clean folder names
-    if chat_id == '':
+    if chat_id == "":
         chat_id = uuid.uuid4().hex[:12]
         
-    # Local chat directory in the current working directory
-    local_root = Path.cwd() / ".agents"
+    base_dir = Path(workspace_root).expanduser().resolve() if workspace_root else Path.cwd()
+    local_root = base_dir / ".agents"
     local_chat_dir = local_root / "chats" / chat_id
     local_chat_dir.mkdir(parents=True, exist_ok=True)
     
     # Define the symlink path in the global directory
     global_symlink_path = global_chats_dir / chat_id
     
-    # Edge Case: Avoid symlinking if the command is run from the home directory 
-    # to prevent a directory trying to symlink to itself
+    # Avoid symlinking if running directly from home directory
     if local_chat_dir.resolve() != global_symlink_path.resolve():
-        
-        # Clean up if a broken symlink or folder with the same ID already exists globally
         if global_symlink_path.is_symlink() or global_symlink_path.exists():
             if global_symlink_path.is_symlink():
                 global_symlink_path.unlink()
@@ -116,7 +126,6 @@ def create_chat_instance(chat_id: str = '') -> tuple[str, Path]:
                     f"Chat ID already exists as a directory: {global_symlink_path}"
                 )
                 
-        # Create the symlink pointing the global chat ID to the absolute path of the local chat directory
         global_symlink_path.symlink_to(local_chat_dir.resolve(), target_is_directory=True)
         log(f"[System] Symlink created: {global_symlink_path} -> {local_chat_dir.resolve()}", "system")
     else:
@@ -147,7 +156,6 @@ def rename_chat_instance(current_chat_dir: str | Path, new_title: str) -> tuple[
     new_slug = base_slug
     counter = 2
 
-    # Ensure uniqueness locally and globally
     while (
         (chats_parent / new_slug).exists()
         and (chats_parent / new_slug).resolve() != old_dir
@@ -163,12 +171,10 @@ def rename_chat_instance(current_chat_dir: str | Path, new_title: str) -> tuple[
     if old_dir.exists() and old_dir != new_dir:
         old_dir.rename(new_dir)
 
-    # Remove old global symlink if it points to the old directory
     old_symlink = global_chats_dir / old_id
     if old_symlink.is_symlink():
         old_symlink.unlink()
 
-    # Create updated global symlink
     new_symlink = global_chats_dir / new_slug
     if new_dir.resolve() != new_symlink.resolve():
         if new_symlink.is_symlink():
@@ -179,5 +185,4 @@ def rename_chat_instance(current_chat_dir: str | Path, new_title: str) -> tuple[
     return new_slug, new_dir
 
 if __name__ == "__main__":
-    # Test the initialization
     new_chat_id, new_chat_dir = create_chat_instance()

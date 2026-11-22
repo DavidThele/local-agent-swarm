@@ -7,17 +7,41 @@ import {
   SwarmSocketEvent,
 } from '../types/swarm';
 
-export const USE_MOCK_BRIDGE = true;
+function shouldUseMockBridge(): boolean {
+  if (typeof window === 'undefined') return true;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('live') === '1') return false;
+  if (params.get('mock') === '1') return true;
+  // Running directly from FastAPI server (:8765) defaults to Live; Vite (:5173) defaults to Mock
+  return window.location.port !== '8765';
+}
+
+export const USE_MOCK_BRIDGE = shouldUseMockBridge();
+
+const apiOrigin =
+  typeof window !== 'undefined' && window.location.port === '8765'
+    ? window.location.origin
+    : 'http://127.0.0.1:8765';
+
+const wsOrigin = apiOrigin.replace(/^http/, 'ws');
 
 export const BACKEND_CONFIG = {
-  REST_BASE_URL: 'http://127.0.0.1:8765/api',
-  WS_URL: 'ws://127.0.0.1:8765/ws/swarm',
+  REST_BASE_URL: `${apiOrigin}/api`,
+  WS_URL: `${wsOrigin}/ws/swarm`,
 };
 
 export type EventSubscriber = (event: SwarmSocketEvent) => void;
 
 export interface ISwarmBridge {
   connect(onEvent: EventSubscriber): () => void;
+  fetchConfig(): Promise<{
+    workspace_root: string;
+    chroma_status: 'Connected' | 'Indexing' | 'Offline';
+    connected_tools: string[];
+  }>;
+  setWorkspace(workspaceRoot: string): Promise<{ workspace_root: string }>;
+  pickWorkspace(): Promise<{ cancelled: boolean; workspace_root: string }>;
+  createNewSession(): Promise<SessionSummary>;
   fetchSessions(): Promise<SessionSummary[]>;
   loadSession(chatId: string): Promise<{
     session: SessionSummary;
@@ -25,7 +49,11 @@ export interface ISwarmBridge {
     logs: CommandEvent[];
     report?: AnalyzerReport;
   }>;
-  deploySwarm(prompt: string, attachments: string[]): Promise<{ chat_id: string }>;
+  deploySwarm(
+    prompt: string,
+    attachments: string[],
+    options?: { workspace_root?: string; chat_id?: string }
+  ): Promise<{ chat_id: string }>;
   resolveHitl(
     blockerId: string,
     agentId: string,
@@ -55,6 +83,34 @@ class LiveSwarmBridge implements ISwarmBridge {
     };
   }
 
+  async fetchConfig() {
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/config`);
+    return res.json();
+  }
+
+  async setWorkspace(workspaceRoot: string) {
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/workspace`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace_root: workspaceRoot }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Invalid directory' }));
+      throw new Error(err.detail || 'Invalid directory');
+    }
+    return res.json();
+  }
+
+  async pickWorkspace() {
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/workspace/pick`, { method: 'POST' });
+    return res.json();
+  }
+
+  async createNewSession(): Promise<SessionSummary> {
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/sessions/new`, { method: 'POST' });
+    return res.json();
+  }
+
   async fetchSessions(): Promise<SessionSummary[]> {
     const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/sessions`);
     return res.json();
@@ -65,11 +121,20 @@ class LiveSwarmBridge implements ISwarmBridge {
     return res.json();
   }
 
-  async deploySwarm(prompt: string, attachments: string[]): Promise<{ chat_id: string }> {
+  async deploySwarm(
+    prompt: string,
+    attachments: string[],
+    options?: { workspace_root?: string; chat_id?: string }
+  ): Promise<{ chat_id: string }> {
     const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/swarm/deploy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, attachments }),
+      body: JSON.stringify({
+        prompt,
+        attachments,
+        workspace_root: options?.workspace_root,
+        chat_id: options?.chat_id,
+      }),
     });
     return res.json();
   }
@@ -99,6 +164,7 @@ class LiveSwarmBridge implements ISwarmBridge {
 class MockSwarmBridge implements ISwarmBridge {
   private subscribers: Set<EventSubscriber> = new Set();
   private timers: number[] = [];
+  private mockWorkspaceRoot = '~/dev/local-swarm';
 
   private mockSessions: SessionSummary[] = [
     {
@@ -144,6 +210,37 @@ class MockSwarmBridge implements ISwarmBridge {
     this.timers = [];
   }
 
+  async fetchConfig() {
+    return {
+      workspace_root: this.mockWorkspaceRoot,
+      chroma_status: 'Connected' as const,
+      connected_tools: ['Zsh', 'FileIO', 'ChromeCDP', 'ChromaDB'],
+    };
+  }
+
+  async setWorkspace(workspaceRoot: string) {
+    this.mockWorkspaceRoot = workspaceRoot;
+    return { workspace_root: workspaceRoot };
+  }
+
+  async pickWorkspace() {
+    return { cancelled: false, workspace_root: this.mockWorkspaceRoot };
+  }
+
+  async createNewSession(): Promise<SessionSummary> {
+    this.clearTimers();
+    return {
+      chat_id: '',
+      title: 'New Session',
+      workspace_root: this.mockWorkspaceRoot,
+      overall_status: 'Idle',
+      total_cost_usd: 0.0,
+      timestamp: 'Now',
+      chroma_status: 'Connected',
+      connected_tools: ['Zsh', 'FileIO', 'ChromeCDP', 'ChromaDB'],
+    };
+  }
+
   async fetchSessions(): Promise<SessionSummary[]> {
     return Promise.resolve([...this.mockSessions]);
   }
@@ -156,8 +253,8 @@ class MockSwarmBridge implements ISwarmBridge {
         {
           agent_id: 'orch_main',
           parent_id: null,
-          type: 'Main',
-          status: found.overall_status === 'Success' ? 'completed' : 'failed',
+          type: 'Main' as const,
+          status: (found.overall_status === 'Success' ? 'completed' : 'failed') as 'completed' | 'failed',
           current_iteration: 4,
           max_iterations: 30,
           cost_usd: 0.14,
@@ -167,8 +264,8 @@ class MockSwarmBridge implements ISwarmBridge {
         {
           agent_id: 'sub_backend',
           parent_id: 'orch_main',
-          type: 'Sub',
-          status: found.overall_status === 'Success' ? 'completed' : 'failed',
+          type: 'Sub' as const,
+          status: (found.overall_status === 'Success' ? 'completed' : 'failed') as 'completed' | 'failed',
           current_iteration: 6,
           max_iterations: 30,
           cost_usd: 0.16,
@@ -178,8 +275,8 @@ class MockSwarmBridge implements ISwarmBridge {
         {
           agent_id: 'worker_x9',
           parent_id: 'sub_backend',
-          type: 'Worker',
-          status: found.overall_status === 'Success' ? 'completed' : 'failed',
+          type: 'Worker' as const,
+          status: (found.overall_status === 'Success' ? 'completed' : 'failed') as 'completed' | 'failed',
           current_iteration: found.overall_status === 'Success' ? 5 : 10,
           max_iterations: 10,
           cost_usd: 0.12,
@@ -196,7 +293,7 @@ class MockSwarmBridge implements ISwarmBridge {
           id: 'log_1',
           timestamp: '13:40:02',
           agent_id: 'orch_main',
-          command_type: 'SearchDB',
+          command_type: 'SearchDB' as const,
           payload: '<SearchDB query="JWT auth middleware patterns" top_k="5" />',
           result_output: 'Found 3 semantic matches in AGENTS.md and skills/auth_flow.md',
         },
@@ -204,7 +301,7 @@ class MockSwarmBridge implements ISwarmBridge {
           id: 'log_2',
           timestamp: '13:40:09',
           agent_id: 'worker_x9',
-          command_type: 'Zsh',
+          command_type: 'Zsh' as const,
           payload: '<Zsh>pytest tests/auth/ -v</Zsh>',
           result_output:
             found.overall_status === 'Success'
@@ -216,16 +313,20 @@ class MockSwarmBridge implements ISwarmBridge {
     });
   }
 
-  async deploySwarm(prompt: string, attachments: string[]): Promise<{ chat_id: string }> {
+  async deploySwarm(
+    prompt: string,
+    attachments: string[],
+    options?: { workspace_root?: string; chat_id?: string }
+  ): Promise<{ chat_id: string }> {
     this.clearTimers();
-    const chatId = `chat_${Math.random().toString(36).substring(2, 8)}`;
+    const chatId = options?.chat_id || `chat_${Math.random().toString(36).substring(2, 8)}`;
 
-    // Invoked immediately after Byte finishes burying the acorn at the canvas center
     this.emit({
       type: 'SESSION_UPDATED',
       payload: {
         chat_id: chatId,
         title: prompt.slice(0, 46) + (prompt.length > 46 ? '...' : ''),
+        workspace_root: options?.workspace_root || this.mockWorkspaceRoot,
         overall_status: 'Running',
         total_cost_usd: 0.02,
       },
@@ -258,7 +359,6 @@ class MockSwarmBridge implements ISwarmBridge {
       },
     });
 
-    // Spawn Sub-Orchestrators
     this.schedule(1400, () => {
       this.emit({
         type: 'AGENT_UPDATED',
@@ -308,7 +408,6 @@ class MockSwarmBridge implements ISwarmBridge {
       });
     });
 
-    // Spawn Leaf Workers
     this.schedule(2900, () => {
       this.emit({
         type: 'AGENT_UPDATED',
@@ -365,7 +464,6 @@ class MockSwarmBridge implements ISwarmBridge {
       });
     });
 
-    // Trigger HITL Security Greylist Blocker on worker_db9
     this.schedule(4800, () => {
       const blocker: HITLBlocker = {
         blocker_id: 'blk_sec_01',

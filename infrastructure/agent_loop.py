@@ -1,13 +1,14 @@
 import importlib
 import json
 import queue
+import uuid
 from datetime import datetime
 from pathlib import Path
+from infrastructure import ui_bridge
 from infrastructure.logging import log
 from infrastructure.prompt_router import send_prompt
 from infrastructure.parser import parse_llm_output
 from infrastructure.agent_types import AgentType
-from infrastructure.workspace import rename_chat_instance
 
 MAX_WORKER_ITERATIONS = 10
 MAX_ORCHESTRATOR_ITERATIONS = 30
@@ -69,11 +70,12 @@ def save_agent_trace(
     trace_file = chat_dir / f"{agent_id}_trace.json"
     payload = {
         "agent_id": agent_id,
+        "parent_id": chat_context_state.get("parent_agent_id"),
         "agent_type": agent_type.value,
         "timestamp": datetime.now().isoformat(),
         "status": status,
         "iterations_used": iterations_used,
-        "max_iterations": MAX_ORCHESTRATOR_ITERATIONS if agent_type is AgentType.MAIN_ORCHESTRATOR else MAX_WORKER_ITERATIONS,
+        "max_iterations": MAX_ORCHESTRATOR_ITERATIONS if agent_type in (AgentType.MAIN_ORCHESTRATOR, AgentType.SUB_ORCHESTRATOR) else MAX_WORKER_ITERATIONS,
         "total_cost_usd": round(total_cost, 6),
         "instructions": instructions,
         "dod": dod,
@@ -96,7 +98,6 @@ def save_global_trace(chat_context_state: dict, final_status: str = "success"):
     total_iters = 0
     overall_status = final_status
 
-    # Find all individual agent trace files in the directory
     trace_files = list(chat_dir.glob("*_trace.json"))
     
     for trace_file in sorted(trace_files):
@@ -193,6 +194,35 @@ def run_agent(
         chat_context_state["active_children"] = {}
     
     chat_context_state.setdefault("workspace_root", str(Path.cwd().resolve()))
+    chat_context_state["worker_id"] = agent_id
+
+    max_iters = (
+        MAX_ORCHESTRATOR_ITERATIONS
+        if agent_type in (AgentType.MAIN_ORCHESTRATOR, AgentType.SUB_ORCHESTRATOR)
+        else MAX_WORKER_ITERATIONS
+    )
+    ui_role = (
+        "Main"
+        if agent_type is AgentType.MAIN_ORCHESTRATOR
+        else "Sub"
+        if agent_type is AgentType.SUB_ORCHESTRATOR
+        else "Worker"
+    )
+
+    ui_bridge.emit(
+        "AGENT_SPAWNED",
+        {
+            "agent_id": agent_id,
+            "parent_id": chat_context_state.get("parent_agent_id"),
+            "type": ui_role,
+            "status": "booting",
+            "current_iteration": 0,
+            "max_iterations": max_iters,
+            "cost_usd": 0.0,
+            "instructions": instructions,
+            "dod": dod,
+        },
+    )
 
     system_prompt = load_prompt(agent_type)
 
@@ -228,7 +258,6 @@ def run_agent(
                 past_data = json.load(f)
             
             try:
-                # Import dynamically to ensure the dependency is available
                 from google.genai import types
                 
                 past_instructions = past_data.get("instructions", "")
@@ -237,10 +266,8 @@ def run_agent(
                 cumulative_cost = past_data.get("total_cost_usd", 0.0)
                 past_iterations = past_data.get("iterations_used", 0)
                 
-                # Create a mock initial prompt so the LLM understands the first response in the history
                 first_user_text = f"[Archived System Prompt Elided]\n=== PAST ASSIGNMENT ===\n<Instructions>{past_instructions}</Instructions>\n<DoD>{past_dod}</DoD>"
                 
-                # Reconstruct the GenAI Chat History array
                 for i, ev in enumerate(past_events):
                     user_text = first_user_text if i == 0 else past_events[i-1].get("environment_results", "[No Results]")
                     chat_history.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
@@ -256,12 +283,21 @@ def run_agent(
 
     # -------------------------------------------------------------------------
 
-    for iteration in range(MAX_WORKER_ITERATIONS):
+    for iteration in range(max_iters):
         async_updates = drain_child_notifications(chat_context_state, block_mode=None)
         if async_updates:
             current_prompt += f"\n{async_updates}"
 
-        log(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{MAX_WORKER_ITERATIONS} - Thinking...", "system")
+        log(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{max_iters} - Thinking...", "system")
+        ui_bridge.emit(
+            "AGENT_UPDATED",
+            {
+                "agent_id": agent_id,
+                "status": "booting",
+                "current_iteration": iteration + 1,
+                "cost_usd": round(cumulative_cost, 4),
+            },
+        )
 
         llm_output, chat_history, cost = send_prompt(
             prompt_text=current_prompt,
@@ -278,10 +314,21 @@ def run_agent(
             
         cumulative_cost += turn_cost
 
+        ui_bridge.emit(
+            "AGENT_UPDATED",
+            {
+                "agent_id": agent_id,
+                "status": "executing",
+                "current_iteration": iteration + 1,
+                "cost_usd": round(cumulative_cost, 4),
+            },
+        )
+
         commands = parse_llm_output(llm_output)
 
         if not commands:
             if chat_context_state["active_children"]:
+                ui_bridge.emit("AGENT_UPDATED", {"agent_id": agent_id, "status": "waiting"})
                 current_prompt = drain_child_notifications(chat_context_state, block_mode="any")
                 continue
             current_prompt = "[System Error] No valid XML commands found in your last output. You must use a command or <MarkDone>."
@@ -314,6 +361,20 @@ def run_agent(
                 executor = importlib.import_module(f"command_executors.{module_name}")
 
                 cmd_result = executor.execute(cmd.attributes, cmd.content, chat_context_state)
+
+                ui_bridge.emit(
+                    "COMMAND_LOGGED",
+                    {
+                        "id": f"cmd_{uuid.uuid4().hex[:8]}",
+                        "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        "agent_id": agent_id,
+                        "command_type": cmd.command,
+                        "attributes": cmd.attributes,
+                        "payload": cmd.raw,
+                        "result_output": cmd_result,
+                        "is_error": cmd_result.startswith("[Error]") or "DENIED" in cmd_result,
+                    },
+                )
 
                 if cmd_result.startswith("[WAIT_FOR_AGENTS:"):
                     wait_mode = cmd_result.split(":")[1].rstrip("]")
@@ -349,13 +410,22 @@ def run_agent(
                 chat_context_state, agent_id, agent_type, instructions,
                 dod, "success", past_iterations + iteration + 1, cumulative_cost, past_events + trace_events
             )
-            # Re-compile global trace from all completed agent trace files on disk
             save_global_trace(chat_context_state, final_status="success")
+            ui_bridge.emit(
+                "AGENT_UPDATED",
+                {
+                    "agent_id": agent_id,
+                    "status": "completed",
+                    "current_iteration": iteration + 1,
+                    "cost_usd": round(cumulative_cost, 4),
+                },
+            )
             log(f"[{agent_type.value}:{agent_id}] Task Completed Successfully.", "success")
             return {"status": "success", "result": final_result}
 
         if wait_mode:
             if chat_context_state["active_children"]:
+                ui_bridge.emit("AGENT_UPDATED", {"agent_id": agent_id, "status": "waiting"})
                 wait_updates = drain_child_notifications(chat_context_state, block_mode=wait_mode)
                 results_string += f"\n{wait_updates}"
             else:
@@ -365,8 +435,18 @@ def run_agent(
 
     save_agent_trace(
         chat_context_state, agent_id, agent_type, instructions,
-        dod, "failed", past_iterations + MAX_WORKER_ITERATIONS, cumulative_cost, past_events + trace_events
+        dod, "failed", past_iterations + max_iters, cumulative_cost, past_events + trace_events
     )
     save_global_trace(chat_context_state, final_status="failed")
-    log(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({MAX_WORKER_ITERATIONS}). Terminating loop.", "error")
+    ui_bridge.emit(
+        "AGENT_UPDATED",
+        {
+            "agent_id": agent_id,
+            "status": "failed",
+            "current_iteration": max_iters,
+            "cost_usd": round(cumulative_cost, 4),
+            "error_line": f"Agent hit maximum iteration limit ({max_iters}/{max_iters}).",
+        },
+    )
+    log(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({max_iters}). Terminating loop.", "error")
     return {"status": "failed", "result": "[System Error] Agent hit the maximum iteration limit without completing the DoD."}

@@ -176,7 +176,7 @@ export const MascotOverlay: React.FC<MascotOverlayProps> = ({
 
   // Helper: Build Flush Border-to-Canvas Waypoints (Bezel -> Wall Climb -> Z-Jump -> Canvas)
   const buildFlushBorderToCanvasPath = (
-    startX: number,
+    _startX: number,
     startY: number,
     destX: number,
     destY: number,

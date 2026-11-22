@@ -1,3 +1,4 @@
+from infrastructure import ui_bridge
 from infrastructure.concurrency import TERMINAL_LOCK
 
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
@@ -17,12 +18,20 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
     elif not isinstance(options, list):
         options = []
 
-    # Strip any duplicate "Other" from LLM output and hardcode "Other" as the final option
-    clean_options = [opt for opt in options if str(opt).strip().lower() != "other"]
-    clean_options.append("Other (type custom response)")
-
     agent_id = context_state.get("worker_id", "main")
-    
+    clean_base = [opt for opt in options if str(opt).strip().lower() != "other"]
+
+    if ui_bridge.is_ui_active():
+        res = ui_bridge.request_hitl(
+            agent_id=agent_id,
+            blocker_type="Question",
+            prompt_text=text,
+            options=clean_base,
+        )
+        return f"[User Reply] {res.get('value', '')}"
+
+    clean_options = list(clean_base) + ["Other (type custom response)"]
+
     with TERMINAL_LOCK:
         print(f"\n[Agent Question from {agent_id}] {text}")
         for i, opt in enumerate(clean_options, 1):
@@ -30,7 +39,6 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
             
         user_response = input("Select an option number or type your answer: ").strip()
         
-        # If user selected the "Other" number, prompt for their custom text
         if user_response == str(len(clean_options)):
             user_response = input("Enter your custom answer: ").strip()
         elif user_response.isdigit() and 1 <= int(user_response) < len(clean_options):
