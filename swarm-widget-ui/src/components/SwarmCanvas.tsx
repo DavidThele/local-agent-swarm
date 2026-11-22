@@ -5,25 +5,70 @@ import {
   Controls,
   Node,
   Edge,
+  Handle,
+  Position,
+  NodeProps,
   ReactFlowProvider,
   BackgroundVariant,
   useReactFlow,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { HelpCircle } from 'lucide-react';
 import { AgentNodeData } from '../types/swarm';
 import { AgentNodeCard, AgentFlowNodeData } from './AgentNodeCard';
 import { RootEdge, clearAnimatedRoots } from './RootEdge';
+
+export const FEEDBACK_NODE_ID = '__feedback_analyzer__';
+
+interface FeedbackNodeData extends Record<string, unknown> {
+  hasReport?: boolean;
+  isSelected?: boolean;
+}
+
+const FeedbackAnalyzerNode: React.FC<NodeProps> = ({ data }) => {
+  const nodeData = data as unknown as FeedbackNodeData;
+  const isSelected = Boolean(nodeData.isSelected);
+  const hasReport = Boolean(nodeData.hasReport);
+
+  return (
+    <div
+      data-agent-node={FEEDBACK_NODE_ID}
+      title="Give feedback & run Swarm Analyzer"
+      className={`relative flex h-[52px] w-[52px] cursor-pointer items-center justify-center rounded-full border transition-colors ${
+        isSelected
+          ? 'border-[#FF6B00] ring-2 ring-[#FF6B00]/50 bg-[#19130f]'
+          : hasReport
+          ? 'border-[#3b6e52] ring-2 ring-[#3b6e52]/35 bg-[#111513] hover:border-[#568f70]'
+          : 'border-[#FF6B00]/70 ring-2 ring-[#FF6B00]/25 bg-[#161311] hover:border-[#FF6B00]'
+      }`}
+    >
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!h-1.5 !w-1.5 !border-0 !bg-[#FF6B00]/70"
+      />
+      <HelpCircle
+        className={`h-5 w-5 ${hasReport && !isSelected ? 'text-[#568f70]' : 'text-[#FF6B00]'}`}
+        strokeWidth={1.85}
+      />
+    </div>
+  );
+};
 
 interface SwarmCanvasProps {
   agents: AgentNodeData[];
   selectedAgentId: string | null;
   rootSpawnClientPos: { x: number; y: number } | null;
+  showFeedbackNode: boolean;
+  hasAnalyzerReport: boolean;
   onSelectAgent: (agentId: string) => void;
+  onSelectFeedbackNode: () => void;
   onPanStateChange: (isPanning: boolean) => void;
 }
 
 const nodeTypes = {
   agentCard: AgentNodeCard,
+  feedbackNode: FeedbackAnalyzerNode,
 };
 
 const edgeTypes = {
@@ -43,14 +88,17 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
   agents,
   selectedAgentId,
   rootSpawnClientPos,
+  showFeedbackNode,
+  hasAnalyzerReport,
   onSelectAgent,
+  onSelectFeedbackNode,
   onPanStateChange,
 }) => {
   const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(new Set());
   const { screenToFlowPosition } = useReactFlow();
 
   // Persistent world-space center coordinates per agent_id so existing nodes NEVER shift
-  const positionsRef = useRef(new Map());
+  const positionsRef = useRef(new Map<string, { x: number; y: number }>());
 
   const handleCollapse = (agentId: string) => {
     setExpandedNodeIds((prev) => {
@@ -70,11 +118,23 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
     }
 
     const activeIds = new Set(agents.map((a) => a.agent_id));
+    if (showFeedbackNode) {
+      activeIds.add(FEEDBACK_NODE_ID);
+    }
     for (const key of positionsRef.current.keys()) {
       if (!activeIds.has(key)) {
         positionsRef.current.delete(key);
       }
     }
+
+    const isSpotOccupied = (x: number, y: number) => {
+      for (const p of positionsRef.current.values()) {
+        if (Math.abs(p.x - x) < 115 && Math.abs(p.y - y) < 85) {
+          return true;
+        }
+      }
+      return false;
+    };
 
     // Place ONLY newly spawned agents, keeping all existing coordinates immutable
     const unplaced = agents.filter((a) => !positionsRef.current.has(a.agent_id));
@@ -90,18 +150,8 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
         byParent.set(key, list);
       });
 
-      const isSpotOccupied = (x: number, y: number) => {
-        for (const p of positionsRef.current.values()) {
-          if (Math.abs(p.x - x) < 115 && Math.abs(p.y - y) < 85) {
-            return true;
-          }
-        }
-        return false;
-      };
-
       byParent.forEach((batch, parentKey) => {
         if (parentKey === '__ROOT__') {
-          // Convert exact acorn burial client pixel into React Flow world coordinates
           let rootWorldCenter = { x: 0, y: 0 };
           if (rootSpawnClientPos) {
             rootWorldCenter = screenToFlowPosition({
@@ -109,7 +159,6 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
               y: rootSpawnClientPos.y,
             });
           } else {
-            // Fallback for loaded history sessions: center-top of visible canvas
             const canvasEl = document.getElementById('swarm-canvas-viewport');
             if (canvasEl) {
               const rect = canvasEl.getBoundingClientRect();
@@ -212,8 +261,59 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
         };
       });
 
+    // Spawn the Feedback & Analyzer '?' node off the Main orchestrator once the run succeeds
+    const mainAgent = agents.find((a) => a.type === 'Main');
+    if (showFeedbackNode && mainAgent) {
+      if (!positionsRef.current.has(FEEDBACK_NODE_ID)) {
+        const mainCenter = positionsRef.current.get(mainAgent.agent_id) || { x: 0, y: 0 };
+        let fx = mainCenter.x + 175;
+        const fy = mainCenter.y;
+        let attempts = 0;
+        while (isSpotOccupied(fx, fy) && attempts < 8) {
+          attempts++;
+          fx += 85;
+        }
+        positionsRef.current.set(FEEDBACK_NODE_ID, { x: fx, y: fy });
+      }
+
+      const feedbackCenter = positionsRef.current.get(FEEDBACK_NODE_ID)!;
+      builtNodes.push({
+        id: FEEDBACK_NODE_ID,
+        type: 'feedbackNode',
+        position: {
+          x: feedbackCenter.x - 26,
+          y: feedbackCenter.y - 26,
+        },
+        data: {
+          hasReport: hasAnalyzerReport,
+          isSelected: selectedAgentId === FEEDBACK_NODE_ID,
+        } as FeedbackNodeData,
+        selected: selectedAgentId === FEEDBACK_NODE_ID,
+      });
+
+      builtEdges.push({
+        id: `edge_${mainAgent.agent_id}_${FEEDBACK_NODE_ID}`,
+        source: mainAgent.agent_id,
+        sourceHandle: 'feedback-out',
+        target: FEEDBACK_NODE_ID,
+        type: 'rootEdge',
+        style: {
+          stroke: hasAnalyzerReport ? '#3b6e52' : '#c85a17',
+          strokeWidth: 1.75,
+        },
+      });
+    }
+
     return { nodes: builtNodes, edges: builtEdges };
-  }, [agents, expandedNodeIds, selectedAgentId, rootSpawnClientPos, screenToFlowPosition]);
+  }, [
+    agents,
+    expandedNodeIds,
+    selectedAgentId,
+    rootSpawnClientPos,
+    showFeedbackNode,
+    hasAnalyzerReport,
+    screenToFlowPosition,
+  ]);
 
   return (
     <div id="swarm-canvas-viewport" className="relative h-full w-full bg-[#0A0A0C]">
@@ -233,6 +333,10 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
         }}
         onMoveEnd={() => onPanStateChange(false)}
         onNodeClick={(_, node) => {
+          if (node.id === FEEDBACK_NODE_ID) {
+            onSelectFeedbackNode();
+            return;
+          }
           setExpandedNodeIds((prev) => {
             const next = new Set(prev);
             next.add(node.id);

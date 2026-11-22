@@ -162,6 +162,40 @@ class HitlResolveReq(BaseModel):
     value: str = ""
 
 
+class AnalyzeSwarmReq(BaseModel):
+    chat_id: str = ""
+    user_feedback: str = ""
+
+
+_IGNORED_DIRS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".backups",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".next",
+    "chrome_profile",
+    ".DS_Store",
+}
+
+
+def _format_analyzer_payload(chat_id: str, analysis: dict[str, Any], duration_sec: float) -> dict[str, Any]:
+    return {
+        "chat_id": chat_id,
+        "efficiency_score": analysis.get("efficiency_score") or "N/A",
+        "bottlenecks": analysis.get("bottlenecks") or "None detected.",
+        "recommendations": analysis.get("recommendations") or "None.",
+        "modifications": analysis.get("modifications", []),
+        "cost_usd": round(float(analysis.get("cost_usd", analysis.get("cost", 0.0))), 6),
+        "duration_sec": round(duration_sec, 1),
+        "user_feedback": analysis.get("user_feedback", ""),
+    }
+
+
 @app.get("/api/config")
 def get_config():
     return {
@@ -199,6 +233,77 @@ def pick_workspace_folder():
         return {"cancelled": False, "workspace_root": str(_ACTIVE_WORKSPACE)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Folder picker failed: {exc}")
+
+
+@app.get("/api/workspace/files")
+def list_workspace_files(q: str = "", limit: int = 40):
+    """Lists files inside _ACTIVE_WORKSPACE for @ autocomplete."""
+    root = _ACTIVE_WORKSPACE
+    if not root.exists() or not root.is_dir():
+        return {"files": []}
+
+    query = q.strip().lower()
+    matches: list[tuple[int, str]] = []
+    max_scan = 4000
+    scanned = 0
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in _IGNORED_DIRS and not d.startswith(".")
+        )
+        rel_dir = Path(dirpath).relative_to(root)
+        for fname in sorted(filenames):
+            if fname == ".DS_Store":
+                continue
+            scanned += 1
+            if scanned > max_scan:
+                break
+            rel_path = (rel_dir / fname).as_posix() if str(rel_dir) != "." else fname
+            low_path = rel_path.lower()
+            low_name = fname.lower()
+            if not query:
+                matches.append((2, rel_path))
+            elif low_name.startswith(query):
+                matches.append((0, rel_path))
+            elif query in low_name:
+                matches.append((1, rel_path))
+            elif query in low_path:
+                matches.append((2, rel_path))
+        if scanned > max_scan:
+            break
+
+    matches.sort(key=lambda item: (item[0], len(item[1]), item[1]))
+    return {"files": [path for _, path in matches[:max(1, min(limit, 100))]]}
+
+
+@app.post("/api/workspace/pick-files")
+def pick_workspace_files():
+    """Opens native macOS Finder file picker (multi-select) for context attachments."""
+    script = (
+        f'set chosenFiles to choose file with prompt "Attach Context Files" '
+        f'default location (POSIX file "{_ACTIVE_WORKSPACE}") with multiple selections allowed\n'
+        f'set output to ""\n'
+        f'repeat with f in chosenFiles\n'
+        f'  set output to output & (POSIX path of f) & linefeed\n'
+        f'end repeat\n'
+        f'return output'
+    )
+    try:
+        res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=120)
+        if res.returncode != 0:
+            return {"cancelled": True, "files": []}
+        raw_lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        formatted: list[str] = []
+        for raw in raw_lines:
+            p = Path(raw).expanduser().resolve()
+            try:
+                formatted.append(p.relative_to(_ACTIVE_WORKSPACE).as_posix())
+            except ValueError:
+                formatted.append(str(p))
+        return {"cancelled": False, "files": formatted}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"File picker failed: {exc}")
 
 
 @app.get("/api/sessions")
@@ -362,42 +467,49 @@ def deploy_swarm(req: DeploySwarmReq):
             )
 
             if req.run_optimizer:
+                opt_started = time.time()
                 analysis = analyze_session(final_chat_dir)
                 if analysis.get("status") == "completed":
-                    rep = analysis.get("report", {})
-                    score_raw = str(rep.get("EfficiencyScore", "90")).split("/")[0]
-                    try:
-                        score_num = int(float(score_raw) * 10) if float(score_raw) <= 10 else int(float(score_raw))
-                    except ValueError:
-                        score_num = 85
-
-                    bottlenecks_raw = rep.get("Bottlenecks", "None")
-                    bottlenecks = [b.strip() for b in str(bottlenecks_raw).splitlines() if b.strip()]
-                    upgrades = [
-                        {
-                            "target_file": "AGENTS.md / skills",
-                            "summary": mod,
-                            "diff_preview": mod,
-                        }
-                        for mod in analysis.get("modifications", [])
-                    ]
-                    ui_bridge.emit(
-                        "ANALYZER_REPORT",
-                        {
-                            "chat_id": final_chat_id,
-                            "efficiency_score": score_num,
-                            "bottlenecks": bottlenecks or ["No major bottlenecks detected."],
-                            "memory_upgrades": upgrades,
-                            "total_tokens": 0,
-                            "total_duration_sec": round(time.time() - started_at, 1),
-                        },
+                    payload = _format_analyzer_payload(
+                        final_chat_id,
+                        analysis,
+                        time.time() - opt_started,
                     )
+                    ui_bridge.emit("ANALYZER_REPORT", payload)
         except Exception as exc:
             log(f"[SwarmServer] Pipeline thread failed: {exc}", "error")
             ui_bridge.emit("SESSION_UPDATED", {"overall_status": "Failed"})
 
     threading.Thread(target=_run_pipeline, name=f"swarm_{chat_id}", daemon=True).start()
     return {"chat_id": chat_id, "workspace_root": str(_ACTIVE_WORKSPACE)}
+
+
+@app.post("/api/swarm/analyze")
+def analyze_swarm_session(req: AnalyzeSwarmReq):
+    target_chat_id = (req.chat_id or _ACTIVE_CHAT_ID or "").strip()
+    if not target_chat_id:
+        raise HTTPException(status_code=400, detail="No active chat_id provided for analysis")
+
+    chat_dir = _find_chat_dir(target_chat_id)
+    if not chat_dir:
+        raise HTTPException(status_code=404, detail=f"Session '{target_chat_id}' not found")
+
+    started_at = time.time()
+    try:
+        analysis = analyze_session(str(chat_dir), user_feedback=req.user_feedback)
+    except Exception as exc:
+        log(f"[SwarmServer] Analyzer failed for {target_chat_id}: {exc}", "error")
+        raise HTTPException(status_code=500, detail=f"Analyzer failed: {exc}")
+
+    if analysis.get("status") != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Analyzer skipped: {analysis.get('reason', 'unknown')}",
+        )
+
+    payload = _format_analyzer_payload(target_chat_id, analysis, time.time() - started_at)
+    ui_bridge.emit("ANALYZER_REPORT", payload)
+    return payload
 
 
 @app.post("/api/swarm/hitl")

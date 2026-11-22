@@ -63,6 +63,15 @@ export const AgentNodeCard: React.FC<NodeProps> = ({ data }) => {
             className="!h-1.5 !w-1.5 !border-0 !bg-zinc-600"
           />
         )}
+
+        {node.type === 'Main' && (
+          <Handle
+            id="feedback-out"
+            type="source"
+            position={Position.Right}
+            className="!h-1.5 !w-1.5 !border-0 !bg-transparent"
+          />
+        )}
       </div>
     );
   }
@@ -167,6 +176,15 @@ export const AgentNodeCard: React.FC<NodeProps> = ({ data }) => {
           type="source"
           position={Position.Bottom}
           className="!h-2 !w-2 !border-0 !bg-zinc-500"
+        />
+      )}
+
+      {node.type === 'Main' && (
+        <Handle
+          id="feedback-out"
+          type="source"
+          position={Position.Right}
+          className="!h-2 !w-2 !border-0 !bg-transparent"
         />
       )}
     </div>

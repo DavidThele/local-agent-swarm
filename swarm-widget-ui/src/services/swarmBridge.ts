@@ -41,6 +41,8 @@ export interface ISwarmBridge {
   }>;
   setWorkspace(workspaceRoot: string): Promise<{ workspace_root: string }>;
   pickWorkspace(): Promise<{ cancelled: boolean; workspace_root: string }>;
+  listWorkspaceFiles(query?: string): Promise<string[]>;
+  pickFiles(): Promise<{ cancelled: boolean; files: string[] }>;
   createNewSession(): Promise<SessionSummary>;
   fetchSessions(): Promise<SessionSummary[]>;
   loadSession(chatId: string): Promise<{
@@ -54,6 +56,7 @@ export interface ISwarmBridge {
     attachments: string[],
     options?: { workspace_root?: string; chat_id?: string }
   ): Promise<{ chat_id: string }>;
+  runAnalyzer(chatId: string, userFeedback: string): Promise<AnalyzerReport>;
   resolveHitl(
     blockerId: string,
     agentId: string,
@@ -106,6 +109,25 @@ class LiveSwarmBridge implements ISwarmBridge {
     return res.json();
   }
 
+  async listWorkspaceFiles(query = ''): Promise<string[]> {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/workspace/files?${params.toString()}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.files) ? data.files : [];
+  }
+
+  async pickFiles(): Promise<{ cancelled: boolean; files: string[] }> {
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/workspace/pick-files`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      throw new Error('File picker failed');
+    }
+    return res.json();
+  }
+
   async createNewSession(): Promise<SessionSummary> {
     const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/sessions/new`, { method: 'POST' });
     return res.json();
@@ -136,6 +158,22 @@ class LiveSwarmBridge implements ISwarmBridge {
         chat_id: options?.chat_id,
       }),
     });
+    return res.json();
+  }
+
+  async runAnalyzer(chatId: string, userFeedback: string): Promise<AnalyzerReport> {
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/swarm/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        user_feedback: userFeedback,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Analyzer request failed' }));
+      throw new Error(err.detail || 'Analyzer request failed');
+    }
     return res.json();
   }
 
@@ -225,6 +263,26 @@ class MockSwarmBridge implements ISwarmBridge {
 
   async pickWorkspace() {
     return { cancelled: false, workspace_root: this.mockWorkspaceRoot };
+  }
+
+  async listWorkspaceFiles(query = ''): Promise<string[]> {
+    const mockFiles = [
+      'README.md',
+      'AGENTS.md',
+      'swarm_server.py',
+      'swarm_gui.py',
+      'pipelines/swarm_analyzer.py',
+      'infrastructure/agent_loop.py',
+      'swarm-widget-ui/src/App.tsx',
+      'swarm-widget-ui/src/components/SwarmCanvas.tsx',
+      'swarm-widget-ui/src/components/TerminalDrawer.tsx',
+    ];
+    const q = query.trim().toLowerCase();
+    return q ? mockFiles.filter((f) => f.toLowerCase().includes(q)) : mockFiles;
+  }
+
+  async pickFiles(): Promise<{ cancelled: boolean; files: string[] }> {
+    return { cancelled: false, files: ['swarm_server.py'] };
   }
 
   async createNewSession(): Promise<SessionSummary> {
@@ -496,6 +554,33 @@ class MockSwarmBridge implements ISwarmBridge {
     return Promise.resolve({ chat_id: chatId });
   }
 
+  async runAnalyzer(chatId: string, userFeedback: string): Promise<AnalyzerReport> {
+    await new Promise((r) => setTimeout(r, 900));
+    const report: AnalyzerReport = {
+      chat_id: chatId || 'chat_live',
+      efficiency_score: '9/10',
+      bottlenecks:
+        'worker_db9 paused awaiting Zsh greylist approval. sub_ui spent 1 extra turn re-querying DOM selectors before caching.',
+      recommendations: userFeedback.trim()
+        ? `Incorporated user feedback ("${userFeedback.trim()}") and documented local database reset rules in AGENTS.md.`
+        : 'Added local docker-compose reset workflow and port mappings to AGENTS.md.',
+      modifications: [
+        {
+          type: 'UpdateAgentsMd',
+          target_file: 'AGENTS.md',
+          summary: 'Added local docker-compose reset workflow and port mappings.',
+          content:
+            '## Database Reset\nPrefer `./scripts/reset_db.sh --safe` to avoid volume wipes.',
+        },
+      ],
+      cost_usd: 0.0042,
+      duration_sec: 1.8,
+      user_feedback: userFeedback.trim() || undefined,
+    };
+    this.emit({ type: 'ANALYZER_REPORT', payload: report });
+    return report;
+  }
+
   async resolveHitl(
     blockerId: string,
     agentId: string,
@@ -546,32 +631,25 @@ class MockSwarmBridge implements ISwarmBridge {
         payload: { agent_id: 'sub_ui', status: 'completed', current_iteration: 3, cost_usd: 0.07 },
       });
       this.emit({
+        type: 'COMMAND_LOGGED',
+        payload: {
+          id: `cmd_${Date.now()}_done`,
+          timestamp: new Date().toLocaleTimeString(),
+          agent_id: 'orch_root',
+          command_type: 'MarkDone',
+          payload:
+            '<MarkDone><Summary>All backend migrations, serializer tests, and Chrome CDP checks completed cleanly with zero errors.</Summary></MarkDone>',
+          result_output:
+            '[STATUS_DONE] All backend migrations, serializer tests, and Chrome CDP checks completed cleanly with zero errors.',
+        },
+      });
+      this.emit({
         type: 'AGENT_UPDATED',
         payload: { agent_id: 'orch_root', status: 'completed', current_iteration: 5, cost_usd: 0.11 },
       });
       this.emit({
         type: 'SESSION_UPDATED',
         payload: { overall_status: 'Success', total_cost_usd: 0.48 },
-      });
-      this.emit({
-        type: 'ANALYZER_REPORT',
-        payload: {
-          chat_id: 'chat_live',
-          efficiency_score: 94,
-          bottlenecks: [
-            'worker_db9 blocked for 14.2s awaiting Zsh greylist approval.',
-            'sub_ui spent 1 extra turn re-querying DOM selectors before caching.',
-          ],
-          memory_upgrades: [
-            {
-              target_file: 'AGENTS.md',
-              summary: 'Added local docker-compose reset workflow and port mappings.',
-              diff_preview: '+ ## Database Reset\n+ Prefer `./scripts/reset_db.sh --safe` to avoid volume wipes.',
-            },
-          ],
-          total_tokens: 48920,
-          total_duration_sec: 19.4,
-        },
       });
     });
   }

@@ -10,8 +10,8 @@ from infrastructure.prompt_router import send_prompt
 from infrastructure.parser import parse_llm_output
 from infrastructure.agent_types import AgentType
 
-MAX_WORKER_ITERATIONS = 10
-MAX_ORCHESTRATOR_ITERATIONS = 30
+MAX_WORKER_ITERATIONS = 50
+MAX_ORCHESTRATOR_ITERATIONS = 100
 
 def _resolve_resource_file(relative_path: str) -> Path:
     """Checks ~/.agents first, then falls back to the repository root."""

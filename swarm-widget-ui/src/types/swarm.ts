@@ -63,17 +63,22 @@ export interface SessionSummary {
   connected_tools: string[];
 }
 
+export interface AnalyzerModification {
+  type: 'UpdateAgentsMd' | 'UpsertSkill';
+  target_file: string;
+  summary: string;
+  content: string;
+}
+
 export interface AnalyzerReport {
   chat_id: string;
-  efficiency_score: number;
-  bottlenecks: string[];
-  memory_upgrades: {
-    target_file: string;
-    summary: string;
-    diff_preview: string;
-  }[];
-  total_tokens: number;
-  total_duration_sec: number;
+  efficiency_score: string;
+  bottlenecks: string;
+  recommendations: string;
+  modifications: AnalyzerModification[];
+  cost_usd: number;
+  duration_sec: number;
+  user_feedback?: string;
 }
 
 export type SwarmSocketEvent =

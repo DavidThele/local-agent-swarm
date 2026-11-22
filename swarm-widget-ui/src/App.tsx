@@ -9,6 +9,7 @@ import {
   FolderOpen,
   Check,
   X,
+  FileCode2,
 } from 'lucide-react';
 import {
   AgentNodeData,
@@ -19,7 +20,7 @@ import {
   SwarmSocketEvent,
 } from './types/swarm';
 import { swarmBridge, mockBridgeInstance } from './services/swarmBridge';
-import { SwarmCanvas } from './components/SwarmCanvas';
+import { SwarmCanvas, FEEDBACK_NODE_ID } from './components/SwarmCanvas';
 import { TerminalDrawer } from './components/TerminalDrawer';
 import { MascotOverlay } from './components/MascotOverlay';
 import { PostRunAnalyticsModal } from './components/PostRunAnalyticsModal';
@@ -81,15 +82,28 @@ export const App: React.FC = () => {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   // Task Initiation & Acorn Collapse States
-  const [promptText, setPromptText] = useState(
-    ''
-  );
+  const [promptText, setPromptText] = useState('');
   const [attachments, setAttachments] = useState<string[]>([]);
   const [isPromptCollapsedToAcorn, setIsPromptCollapsedToAcorn] = useState(false);
   const [burySequenceTrigger, setBurySequenceTrigger] = useState(0);
   const [rootSpawnClientPos, setRootSpawnClientPos] = useState<{ x: number; y: number } | null>(
     null
   );
+
+  // @ File Autocomplete States
+  const promptInputRef = useRef<HTMLInputElement>(null);
+  const [mentionRange, setMentionRange] = useState<{
+    start: number;
+    end: number;
+    query: string;
+  } | null>(null);
+  const [mentionSuggestions, setMentionSuggestions] = useState<string[]>([]);
+  const [mentionActiveIdx, setMentionActiveIdx] = useState(0);
+
+  // Post-Run Feedback & Analyzer States
+  const [feedbackText, setFeedbackText] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analyzerError, setAnalyzerError] = useState<string | null>(null);
 
   // Event Buffer: Agents start immediately on Deploy; events buffer until Byte finishes burying the acorn
   const isAwaitingBuryRef = useRef<boolean>(false);
@@ -201,7 +215,113 @@ export const App: React.FC = () => {
 
   const activeHitlAgentId = blockers.length > 0 ? blockers[0].agent_id : null;
   const failedAgent = agents.find((a) => a.status === 'failed') || null;
-  const selectedAgent = agents.find((a) => a.agent_id === selectedAgentId) || null;
+  const isFeedbackMode = selectedAgentId === FEEDBACK_NODE_ID;
+  const selectedAgent =
+    !isFeedbackMode && selectedAgentId
+      ? agents.find((a) => a.agent_id === selectedAgentId) || null
+      : null;
+  const showFeedbackNode =
+    hasRootNode &&
+    currentSession.overall_status === 'Success' &&
+    agents.length > 0 &&
+    agents.every((a) => a.status === 'completed');
+
+  // Query workspace files whenever an active @mention token is being typed
+  useEffect(() => {
+    if (!mentionRange) {
+      setMentionSuggestions([]);
+      setMentionActiveIdx(0);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      swarmBridge
+        .listWorkspaceFiles(mentionRange.query)
+        .then((files) => {
+          if (cancelled) return;
+          const filtered = files.filter((f) => !attachments.includes(f));
+          setMentionSuggestions(filtered);
+          setMentionActiveIdx(0);
+        })
+        .catch(() => {
+          if (!cancelled) setMentionSuggestions([]);
+        });
+    }, 60);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [mentionRange, attachments, currentSession.workspace_root]);
+
+  const detectMentionAtCursor = (text: string, cursorPos: number | null) => {
+    if (cursorPos === null) {
+      setMentionRange(null);
+      return;
+    }
+    const beforeCursor = text.slice(0, cursorPos);
+    const match = beforeCursor.match(/(?:^|\s)@([^\s]*)$/);
+    if (!match) {
+      setMentionRange(null);
+      return;
+    }
+    const query = match[1];
+    const start = cursorPos - query.length - 1; // index of '@'
+    setMentionRange({ start, end: cursorPos, query });
+  };
+
+  const handleSelectMentionFile = (filePath: string) => {
+    if (!mentionRange) return;
+    const before = promptText.slice(0, mentionRange.start);
+    const after = promptText.slice(mentionRange.end);
+    const joined =
+      before.endsWith(' ') && after.startsWith(' ')
+        ? before + after.slice(1)
+        : (before + after).replace(/^\s+/, '');
+    setPromptText(joined);
+    setAttachments((prev) => (prev.includes(filePath) ? prev : [...prev, filePath]));
+    setMentionRange(null);
+    setMentionSuggestions([]);
+
+    const nextCaret = Math.min(mentionRange.start, joined.length);
+    window.requestAnimationFrame(() => {
+      promptInputRef.current?.focus();
+      promptInputRef.current?.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
+  const handlePickFiles = async () => {
+    try {
+      const res = await swarmBridge.pickFiles();
+      if (!res.cancelled && res.files.length > 0) {
+        setAttachments((prev) => {
+          const next = [...prev];
+          for (const f of res.files) {
+            if (!next.includes(f)) next.push(f);
+          }
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('File picker failed:', err);
+    }
+  };
+
+  const handleRunAnalyzer = async (feedback: string) => {
+    if (!currentSession.chat_id || isAnalyzing) return;
+    setIsAnalyzing(true);
+    setAnalyzerError(null);
+    try {
+      const report = await swarmBridge.runAnalyzer(currentSession.chat_id, feedback);
+      setAnalyzerReport(report);
+      setShowReportModal(true);
+    } catch (err) {
+      setAnalyzerError(err instanceof Error ? err.message : 'Analyzer failed');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   const handleCreateNewSession = async () => {
     clearFlushTimers();
@@ -214,6 +334,8 @@ export const App: React.FC = () => {
     setLogs([]);
     setBlockers([]);
     setAnalyzerReport(null);
+    setFeedbackText('');
+    setAnalyzerError(null);
     setSelectedAgentId(null);
     setRootSpawnClientPos(null);
     setIsDrawerOpen(false);
@@ -248,7 +370,15 @@ export const App: React.FC = () => {
   // Step 1: Fire agent logic IMMEDIATELY on Deploy Swarm, while buffering UI updates until Byte buries the acorn
   const handleDeploySwarm = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!promptText.trim() || isPromptCollapsedToAcorn) return;
+    const submittedPrompt = promptText.trim();
+    if (!submittedPrompt || isPromptCollapsedToAcorn) return;
+    const submittedAttachments = [...attachments];
+
+    // Clear input & attachments immediately upon sending
+    setPromptText('');
+    setAttachments([]);
+    setMentionRange(null);
+    setMentionSuggestions([]);
 
     clearFlushTimers();
     bufferedEventsRef.current = [];
@@ -258,13 +388,16 @@ export const App: React.FC = () => {
     setLogs([]);
     setBlockers([]);
     setAnalyzerReport(null);
+    setFeedbackText('');
+    setAnalyzerError(null);
+    setSelectedAgentId(null);
     setHighlightErrorInDrawer(false);
     setIsPromptCollapsedToAcorn(true);
     setBurySequenceTrigger((c) => c + 1);
 
     // Start the backend swarm immediately in the background
     swarmBridge
-      .deploySwarm(promptText, [...attachments], {
+      .deploySwarm(submittedPrompt, submittedAttachments, {
         workspace_root: currentSession.workspace_root,
         chat_id: currentSession.chat_id || undefined,
       })
@@ -315,6 +448,12 @@ export const App: React.FC = () => {
 
   const handleSelectAgentOnCanvas = (agentId: string) => {
     setSelectedAgentId(agentId);
+    setHighlightErrorInDrawer(false);
+    setIsDrawerOpen(true);
+  };
+
+  const handleSelectFeedbackNode = () => {
+    setSelectedAgentId(FEEDBACK_NODE_ID);
     setHighlightErrorInDrawer(false);
     setIsDrawerOpen(true);
   };
@@ -614,6 +753,10 @@ export const App: React.FC = () => {
                             setAgents(data.agents);
                             setLogs(data.logs);
                             setBlockers([]);
+                            setAnalyzerReport(data.report || null);
+                            setFeedbackText('');
+                            setAnalyzerError(null);
+                            setSelectedAgentId(null);
                           }}
                           className={`w-full rounded-lg border p-2 text-left transition ${
                             currentSession.chat_id === s.chat_id
@@ -637,7 +780,10 @@ export const App: React.FC = () => {
                     agents={agents}
                     selectedAgentId={selectedAgentId}
                     rootSpawnClientPos={rootSpawnClientPos}
+                    showFeedbackNode={showFeedbackNode}
+                    hasAnalyzerReport={Boolean(analyzerReport)}
                     onSelectAgent={handleSelectAgentOnCanvas}
+                    onSelectFeedbackNode={handleSelectFeedbackNode}
                     onPanStateChange={setIsCanvasPanning}
                   />
                 </div>
@@ -646,8 +792,43 @@ export const App: React.FC = () => {
               {/* Bottom Task Input Dock */}
               <div
                 data-mascot-target="task-input-box"
-                className="border-t border-zinc-800/80 bg-[#0A0A0C] px-4 py-3"
+                className="relative border-t border-zinc-800/80 bg-[#0A0A0C] px-4 py-3"
               >
+                {/* @ File Autocomplete Dropdown */}
+                {mentionRange && !isPromptCollapsedToAcorn && (
+                  <div className="absolute bottom-full left-4 right-4 z-40 mb-1.5 max-h-56 overflow-y-auto rounded-xl border border-zinc-800 bg-[#111114] p-1 shadow-2xl">
+                    <div className="flex items-center justify-between px-2.5 py-1 font-mono text-[10px] text-zinc-500">
+                      <span>Attach file from workspace</span>
+                      <span>↑↓ navigate • ↵ select • esc close</span>
+                    </div>
+                    {mentionSuggestions.length === 0 ? (
+                      <div className="px-2.5 py-2 font-mono text-[11px] text-zinc-500">
+                        No matching files for &ldquo;@{mentionRange.query}&rdquo;
+                      </div>
+                    ) : (
+                      mentionSuggestions.map((filePath, idx) => (
+                        <button
+                          key={filePath}
+                          type="button"
+                          onMouseDown={(ev) => {
+                            ev.preventDefault();
+                            handleSelectMentionFile(filePath);
+                          }}
+                          onMouseEnter={() => setMentionActiveIdx(idx)}
+                          className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left font-mono text-[11px] transition ${
+                            idx === mentionActiveIdx
+                              ? 'bg-zinc-800 text-white'
+                              : 'text-zinc-300 hover:bg-zinc-800/60'
+                          }`}
+                        >
+                          <FileCode2 className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
+                          <span className="truncate">{filePath}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+
                 <form
                   onSubmit={handleDeploySwarm}
                   className={`transition-all duration-500 ${
@@ -661,17 +842,22 @@ export const App: React.FC = () => {
                       {attachments.map((item) => (
                         <span
                           key={item}
-                          className="rounded border border-zinc-800 bg-[#111114] px-2 py-0.5 font-mono text-[10px] text-zinc-400"
+                          className="inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-[#141418] px-2 py-0.5 font-mono text-[10px] text-zinc-300"
                         >
-                          {item}
+                          <FileCode2 className="h-3 w-3 shrink-0 text-zinc-500" />
+                          <span className="max-w-[240px] truncate" title={item}>
+                            {item}
+                          </span>
                           <button
                             type="button"
                             onClick={() =>
-                              setAttachments(attachments.filter((a) => a !== item))
+                              setAttachments((prev) => prev.filter((a) => a !== item))
                             }
-                            className="ml-1.5 text-zinc-500 hover:text-white"
+                            className="rounded p-0.5 text-zinc-500 transition hover:bg-zinc-800 hover:text-white"
+                            title={`Remove ${item}`}
+                            aria-label={`Remove ${item}`}
                           >
-                            ×
+                            <X className="h-2.5 w-2.5" />
                           </button>
                         </span>
                       ))}
@@ -681,22 +867,70 @@ export const App: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        const next = prompt('Attach file path or chat_id:');
-                        if (next && !attachments.includes(next)) {
-                          setAttachments([...attachments, next]);
-                        }
-                      }}
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-[#111114] text-zinc-400 hover:border-zinc-600 hover:text-white"
+                      onClick={handlePickFiles}
+                      title="Attach files via Finder"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-zinc-800 bg-[#111114] text-zinc-400 transition hover:border-zinc-600 hover:text-white"
                     >
                       <Paperclip className="h-4 w-4" />
                     </button>
 
                     <input
+                      ref={promptInputRef}
                       type="text"
                       value={promptText}
-                      onChange={(e) => setPromptText(e.target.value)}
-                      placeholder="Define autonomous swarm task..."
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPromptText(val);
+                        detectMentionAtCursor(val, e.target.selectionStart);
+                      }}
+                      onClick={(e) =>
+                        detectMentionAtCursor(
+                          e.currentTarget.value,
+                          e.currentTarget.selectionStart
+                        )
+                      }
+                      onKeyUp={(e) => {
+                        if (
+                          e.key === 'ArrowLeft' ||
+                          e.key === 'ArrowRight' ||
+                          e.key === 'Home' ||
+                          e.key === 'End'
+                        ) {
+                          detectMentionAtCursor(
+                            e.currentTarget.value,
+                            e.currentTarget.selectionStart
+                          );
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (!mentionRange) return;
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setMentionRange(null);
+                          setMentionSuggestions([]);
+                          return;
+                        }
+                        if (mentionSuggestions.length === 0) return;
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setMentionActiveIdx((i) => (i + 1) % mentionSuggestions.length);
+                        } else if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setMentionActiveIdx(
+                            (i) => (i - 1 + mentionSuggestions.length) % mentionSuggestions.length
+                          );
+                        } else if (e.key === 'Enter' || e.key === 'Tab') {
+                          e.preventDefault();
+                          const chosen = mentionSuggestions[mentionActiveIdx];
+                          if (chosen) handleSelectMentionFile(chosen);
+                        }
+                      }}
+                      onBlur={() => {
+                        window.setTimeout(() => {
+                          setMentionRange(null);
+                        }, 120);
+                      }}
+                      placeholder="Define autonomous swarm task... (type @ to attach files)"
                       className="h-9 flex-1 rounded-lg border border-zinc-800 bg-[#111114] px-3 text-xs text-white placeholder-zinc-600 focus:border-zinc-600 focus:outline-none"
                     />
 
@@ -713,10 +947,18 @@ export const App: React.FC = () => {
 
             <TerminalDrawer
               isOpen={isDrawerOpen}
+              isFeedbackMode={isFeedbackMode}
               selectedAgent={selectedAgent}
               allLogs={logs}
               activeBlockers={blockers}
               highlightError={highlightErrorInDrawer}
+              analyzerReport={analyzerReport}
+              isAnalyzing={isAnalyzing}
+              analyzerError={analyzerError}
+              feedbackText={feedbackText}
+              onFeedbackTextChange={setFeedbackText}
+              onRunAnalyzer={handleRunAnalyzer}
+              onOpenAnalyzerModal={() => setShowReportModal(true)}
               onClose={() => setIsDrawerOpen(false)}
               onClearAgentFilter={() => setSelectedAgentId(null)}
               onResolveHitl={(blockerId, agentId, resolution) =>

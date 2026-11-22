@@ -47,3 +47,5 @@ node_modules
 
 chrome_profile/
 dist/
+
+.backups/

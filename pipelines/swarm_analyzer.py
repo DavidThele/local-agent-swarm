@@ -36,7 +36,7 @@ def collect_session_artifacts(chat_dir: Path) -> str:
 
     return "\n\n".join(artifacts)
 
-def analyze_session(chat_id_or_path: str) -> dict:
+def analyze_session(chat_id_or_path: str, user_feedback: str = "") -> dict:
     candidate_path = Path(chat_id_or_path).expanduser()
     if candidate_path.exists() and candidate_path.is_dir():
         chat_dir = candidate_path
@@ -57,12 +57,23 @@ def analyze_session(chat_id_or_path: str) -> dict:
     skills_dir.mkdir(parents=True, exist_ok=True)
     existing_skills = [p.stem for p in skills_dir.glob("*.md")]
 
+    feedback_block = ""
+    cleaned_feedback = (user_feedback or "").strip()
+    if cleaned_feedback:
+        feedback_block = (
+            f"<UserFeedback>\n{cleaned_feedback}\n</UserFeedback>\n\n"
+            "Pay special attention to the user's feedback above. Incorporate any durable preferences, "
+            "corrections, or workflow notes into AGENTS.md or skills where appropriate, and address "
+            "their feedback directly in your EvaluationReport.\n\n"
+        )
+
     sys_prompt = load_optimizer_prompt()
     full_prompt = (
         f"{sys_prompt}\n\n"
         f"<CurrentAgentsMd>\n{current_agents_md}\n</CurrentAgentsMd>\n\n"
         f"<ExistingSkills>{', '.join(existing_skills) if existing_skills else 'None'}</ExistingSkills>\n\n"
         f"<SessionTelemetry>\n{session_logs}\n</SessionTelemetry>\n\n"
+        f"{feedback_block}"
         "Analyze the session telemetry above and emit your XML optimization commands."
     )
 
@@ -95,9 +106,14 @@ def analyze_session(chat_id_or_path: str) -> dict:
                 agents_md_path.write_text(new_content + "\n", encoding="utf-8")
                 if REPO_ROOT / "AGENTS.md" != agents_md_path and (REPO_ROOT / "AGENTS.md").exists():
                     (REPO_ROOT / "AGENTS.md").write_text(new_content + "\n", encoding="utf-8")
-                
+
                 snapshot_prompt_history(new_content + "\n", summary, prefix="agents")
-                modifications.append(summary)
+                modifications.append({
+                    "type": "UpdateAgentsMd",
+                    "target_file": "AGENTS.md",
+                    "summary": summary,
+                    "content": new_content,
+                })
                 log(f"[SwarmAnalyzer] Upgraded AGENTS.md: {summary}", "success")
 
         elif cmd.command == "UpsertSkill":
@@ -112,7 +128,12 @@ def analyze_session(chat_id_or_path: str) -> dict:
             if skill_name and skill_body:
                 skill_path = skills_dir / f"{skill_name}.md"
                 skill_path.write_text(skill_body + "\n", encoding="utf-8")
-                modifications.append(summary)
+                modifications.append({
+                    "type": "UpsertSkill",
+                    "target_file": f"skills/{skill_name}.md",
+                    "summary": summary,
+                    "content": skill_body,
+                })
                 log(f"[SwarmAnalyzer] Saved skill '{skill_path.name}': {summary}", "success")
 
     report_file = chat_dir / "optimizer_report.txt"
@@ -124,9 +145,14 @@ def analyze_session(chat_id_or_path: str) -> dict:
 
     return {
         "status": "completed",
-        "report": report_summary,
+        "efficiency_score": str(report_summary.get("EfficiencyScore", "N/A")).strip(),
+        "bottlenecks": str(report_summary.get("Bottlenecks", "")).strip(),
+        "recommendations": str(report_summary.get("Recommendations", "")).strip(),
         "modifications": modifications,
-        "cost": total_cost
+        "cost_usd": total_cost,
+        "user_feedback": cleaned_feedback,
+        "report": report_summary,
+        "cost": total_cost,
     }
 
 if __name__ == "__main__":

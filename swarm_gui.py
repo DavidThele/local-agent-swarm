@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 import threading
 import time
 import urllib.request
@@ -12,7 +13,12 @@ from AppKit import (
     NSApplication,
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
+    NSBezierPath,
     NSColor,
+    NSCompositingOperationSourceOver,
+    NSGraphicsContext,
+    NSImage,
+    NSImageInterpolationNone,
     NSMakeRect,
     NSNormalWindowLevel,
     NSScreen,
@@ -22,16 +28,75 @@ from AppKit import (
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSObject, NSURL, NSURLRequest
+from Foundation import NSMakeSize, NSObject, NSURL, NSURLRequest, NSZeroRect
 from PyObjCTools import AppHelper
 
 from infrastructure.logging import log
 
 HOST = "127.0.0.1"
 PORT = 8765
+REPO_ROOT = Path(__file__).resolve().parent
 
 # Prevent Python GC from collecting Obj-C delegates and message handlers
 _KEEP_ALIVE: list[object] = []
+
+
+def build_acorn_app_icon():
+    """Creates a crisp macOS Dock/App Switcher icon from the existing acorn.png sprite."""
+    candidates = [
+        REPO_ROOT / "swarm-widget-ui" / "public" / "sprites" / "acorn.png",
+        REPO_ROOT / "swarm-widget-ui" / "dist" / "sprites" / "acorn.png",
+    ]
+    icon_path = next((p for p in candidates if p.exists()), None)
+    if not icon_path:
+        return None
+
+    sprite = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+    if sprite is None:
+        return None
+
+    size = 512.0
+    canvas = NSImage.alloc().initWithSize_(NSMakeSize(size, size))
+    canvas.lockFocus()
+    try:
+        ctx = NSGraphicsContext.currentContext()
+        if ctx:
+            ctx.setImageInterpolation_(NSImageInterpolationNone)
+
+        # macOS-style dark squircle background matching the app's monochrome palette
+        inset = 36.0
+        bg_rect = NSMakeRect(inset, inset, size - inset * 2, size - inset * 2)
+        bg_path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bg_rect, 96.0, 96.0)
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.067, 0.067, 0.078, 1.0).setFill()
+        bg_path.fill()
+
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.22, 0.22, 0.26, 1.0).setStroke()
+        bg_path.setLineWidth_(6.0)
+        bg_path.stroke()
+
+        # Center and aspect-fit the acorn sprite with generous padding
+        src_size = sprite.size()
+        if src_size.width > 0 and src_size.height > 0:
+            max_dim = size - 192.0
+            scale = min(max_dim / src_size.width, max_dim / src_size.height)
+            draw_w = src_size.width * scale
+            draw_h = src_size.height * scale
+            draw_rect = NSMakeRect(
+                (size - draw_w) / 2.0,
+                (size - draw_h) / 2.0,
+                draw_w,
+                draw_h,
+            )
+            sprite.drawInRect_fromRect_operation_fraction_(
+                draw_rect,
+                NSZeroRect,
+                NSCompositingOperationSourceOver,
+                1.0,
+            )
+    finally:
+        canvas.unlockFocus()
+
+    return canvas
 
 
 class SwarmWindowDelegate(NSObject):
@@ -93,6 +158,11 @@ def start_backend_server():
 def launch_native_window(url: str):
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+
+    app_icon = build_acorn_app_icon()
+    if app_icon is not None:
+        app.setApplicationIconImage_(app_icon)
+        _KEEP_ALIVE.append(app_icon)
 
     screen = NSScreen.mainScreen().visibleFrame()
     init_w = 960
