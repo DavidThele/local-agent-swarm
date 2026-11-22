@@ -10,7 +10,6 @@ import {
 } from '@xyflow/react';
 import dagre from 'dagre';
 import '@xyflow/react/dist/style.css';
-import { Crown } from 'lucide-react';
 import { AgentNodeData } from '../types/swarm';
 import { AgentNodeCard, AgentFlowNodeData } from './AgentNodeCard';
 
@@ -33,7 +32,6 @@ function computeDagreLayout(
 ) {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  // Generous spacing so expanding a node from 52px circle to 260px card doesn't collide
   g.setGraph({ rankdir: 'TB', nodesep: 90, ranksep: 110 });
 
   agents.forEach((agent) => {
@@ -115,45 +113,33 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
     [agents, expandedNodeIds, selectedAgentId]
   );
 
-  // Strict Camera Lock: No automatic fitView or setCenter when nodes spawn, update, or fail.
   return (
     <div id="swarm-canvas-viewport" className="relative h-full w-full bg-[#0A0A0C]">
-      {agents.length === 0 ? (
-        <div className="flex h-full flex-col items-center justify-center px-6 text-center">
-          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-full border border-zinc-800 bg-[#111114]">
-            <Crown className="h-4 w-4 text-zinc-500" />
-          </div>
-          <p className="max-w-xs text-xs text-zinc-500">
-            Awaiting task deployment.
-          </p>
-        </div>
-      ) : (
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          defaultViewport={{ x: 380, y: 70, zoom: 1 }}
-          onMoveStart={() => onPanStateChange(true)}
-          onMoveEnd={() => onPanStateChange(false)}
-          onNodeClick={(_, node) => {
-            setExpandedNodeIds((prev) => {
-              const next = new Set(prev);
-              next.add(node.id);
-              return next;
-            });
-            onSelectAgent(node.id);
-          }}
-          minZoom={0.25}
-          maxZoom={1.75}
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#222228" />
-          <Controls
-            position="bottom-left"
-            className="!border !border-zinc-800 !bg-[#121216] !fill-zinc-400 !shadow-none [&>button]:!border-zinc-800 [&>button]:!bg-[#121216] [&>button:hover]:!bg-zinc-800"
-          />
-        </ReactFlow>
-      )}
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        defaultViewport={{ x: 380, y: 70, zoom: 1 }}
+        onMoveStart={() => onPanStateChange(true)}
+        onMoveEnd={() => onPanStateChange(false)}
+        onNodeClick={(_, node) => {
+          setExpandedNodeIds((prev) => {
+            const next = new Set(prev);
+            next.add(node.id);
+            return next;
+          });
+          onSelectAgent(node.id);
+        }}
+        minZoom={0.25}
+        maxZoom={1.75}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#222228" />
+        <Controls
+          position="bottom-left"
+          className="!border !border-zinc-800 !bg-[#121216] !fill-zinc-400 !shadow-none [&>button]:!border-zinc-800 [&>button]:!bg-[#121216] [&>button:hover]:!bg-zinc-800"
+        />
+      </ReactFlow>
     </div>
   );
 };

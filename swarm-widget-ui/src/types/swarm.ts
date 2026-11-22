@@ -86,15 +86,15 @@ export type SwarmSocketEvent =
   | { type: 'ANALYZER_REPORT'; payload: AnalyzerReport };
 
 export type MascotAnimationState =
-  | 'idle'
-  | 'run_bezel'
-  | 'climb_bezel'
-  | 'run_canvas_topdown'
-  | 'acorn_catch'
-  | 'carry_acorn'
-  | 'dig'
-  | 'wave_point'
-  | 'offscreen_point'
-  | 'hardhat_inspect'
-  | 'glass_knock'
-  | 'peekaboo_snack';
+  | 'idle'                 // Row 1 (index 0): right - ScaleX flip
+  | 'running'              // Row 2 (index 1): right - ScaleX flip
+  | 'climbing'             // Row 3 (index 2): right - ScaleX flip for left/right wall
+  | 'running_canvas'       // Row 4 (index 3): down  - Rotate in 2D canvas pane
+  | 'running_acorn_canvas' // Row 5 (index 4): down  - Rotate in 2D canvas pane
+  | 'jumping'              // Row 6 (index 5): down  - Rotate during Z-axis bezel->canvas transition
+  | 'running_acorn_bezel'  // Row 7 (index 6): right - ScaleX flip on bezels
+  | 'burying'              // Row 8 (index 7): right - ScaleX flip
+  | 'pointing'             // Row 9 (index 8): right - ScaleX flip
+  | 'inspecting'           // Row 10 (index 9): right - ScaleX flip
+  | 'knocking'             // Row 11 (index 10): right - ScaleX flip
+  | 'munching';            // Row 12 (index 11): right - ScaleX flip

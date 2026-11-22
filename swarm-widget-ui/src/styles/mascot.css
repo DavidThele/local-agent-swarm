@@ -1,90 +1,129 @@
-/* ==========================================================================
-   STRICT MONOCHROME + ELECTRIC ORANGE (#FF6B00) & SPRITE SHEET DEFINITIONS
-   ========================================================================== */
-
 .byte-sprite {
-  width: 64px;
-  height: 64px;
+  --sprite-w: 64px;
+  --cols: 10;
+  --rows: 12;
+  --sheet-src-w: 1856;
+  --sheet-src-h: 2304;
+
+  /* Animation loop durations (in seconds for all 10 frames) */
+  --fps-idle: 0.8s;
+  --fps-run: 0.8s;
+  --fps-climb: 0.8s;
+  --fps-run-canvas: 0.8s;
+  --fps-run-acorn: 0.8s;
+  --fps-jump: 0.8s;
+  --fps-bury: 0.8s;
+  --fps-point: 1.3s;
+  --fps-inspect: 0.8s;
+  --fps-knock: 0.8s;
+  --fps-munch: 0.8s;
+
+  /* Exact scaled sheet & single-row step in CSS pixels */
+  --sheet-w: calc(var(--sprite-w) * var(--cols));
+  --cell-src-w: calc(var(--sheet-src-w) / var(--cols));
+  --cell-src-h: calc(var(--sheet-src-h) / var(--rows));
+  --sheet-h: calc(var(--sheet-w) * (var(--sheet-src-h) / var(--sheet-src-w)));
+  --row-h: calc(var(--sheet-h) / var(--rows));
+
+  /* Total horizontal distance animated across the row */
+  --pan-x: calc(-1 * var(--sheet-w));
+
+  width: var(--sprite-w);
+  height: calc(var(--sprite-w) * (var(--cell-src-h) / var(--cell-src-w)));
   image-rendering: pixelated;
   background-repeat: no-repeat;
   position: absolute;
   top: 0;
   left: 0;
   user-select: none;
-  /* Zero CSS transition easing: position is driven strictly by linear RAF kinematics */
+  transform-origin: 50% 50%;
   will-change: transform;
 }
 
 .byte-sprite.has-custom-spritesheet {
-  --n: 8; /* Default frame count */
-  --numrows: 10; /* Total rows in the sprite sheet */
-  --row: 0; /* Current active row */
-  
   background-image: url('/sprites/byte_spritesheet.png');
-  
-  /* Dynamically scale width based on frame count. Height scales proportionally. */
-  background-size: calc(var(--n) * 100%) auto;
-  
-  /* Percentage positioning aligns the container relative to the overflow image space.
-     Using 100% / (numrows - 1) shifts it perfectly frame-by-frame regardless of actual pixel height. */
-  background-position-y: calc(var(--row) * 100% / (var(--numrows) - 1));
+  background-size: var(--sheet-w) var(--sheet-h);
 }
 
-/* Percentage background positions are an offset of (Container - Image). 
-   To cycle exactly N frames on the X axis, we shift based on N */
-@keyframes sprite-play {
-  from { background-position-x: 0%; }
-  to   { background-position-x: calc(100% * var(--n) / (var(--n) - 1)); }
-}
-
+/* Row 1 (index 0): idle - right - (ScaleX flip for left/right) */
 .byte-sprite.has-custom-spritesheet[data-state='idle'] {
-  --row: 0;
-  animation: sprite-play 0.9s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='run_bezel'] {
-  --n: 6; /* Sprinting has fewer frames */
-  --row: 1;
-  animation: sprite-play 0.4s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='climb_bezel'] {
-  --row: 2;
-  animation: sprite-play 0.45s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='run_canvas_topdown'] {
-  --row: 3;
-  animation: sprite-play 0.4s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='carry_acorn'] {
-  --row: 4;
-  animation: sprite-play 0.42s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='dig'] {
-  --row: 5;
-  animation: sprite-play 0.3s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='wave_point'],
-.byte-sprite.has-custom-spritesheet[data-state='offscreen_point'] {
-  --row: 6;
-  animation: sprite-play 0.6s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='hardhat_inspect'] {
-  --row: 7;
-  animation: sprite-play 0.75s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='glass_knock'] {
-  --row: 8;
-  animation: sprite-play 0.5s steps(var(--n)) infinite;
-}
-.byte-sprite.has-custom-spritesheet[data-state='peekaboo_snack'] {
-  --row: 9;
-  animation: sprite-play 1.1s steps(var(--n)) infinite;
+  background-position: 0px calc(0 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-idle, 0.85s) steps(10) infinite;
 }
 
-/* Subtle Monochrome Edge Dash Flow */
+/* Row 2 (index 1): running - right - (ScaleX flip for left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='running'] {
+  background-position: 0px calc(-1 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-run, 0.38s) steps(10) infinite;
+}
+
+/* Row 3 (index 2): climbing - right - (ScaleX flip for left/right wall) */
+.byte-sprite.has-custom-spritesheet[data-state='climbing'] {
+  background-position: 0px calc(-2 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-climb, 0.42s) steps(10) infinite;
+}
+
+/* Row 4 (index 3): running (canvas) - down - (Rotate for up/down/left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='running_canvas'] {
+  background-position: 0px calc(-3 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-run-canvas, 0.38s) steps(10) infinite;
+}
+
+/* Row 5 (index 4): running with acorn (canvas) - down - (Rotate for up/down/left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='running_acorn_canvas'] {
+  background-position: 0px calc(-4 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-run-acorn, 0.4s) steps(10) infinite;
+}
+
+/* Row 6 (index 5): jumping - down - (Rotate during Z-axis bezel->canvas transition) */
+.byte-sprite.has-custom-spritesheet[data-state='jumping'] {
+  background-position: 0px calc(-5 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-jump, 0.32s) steps(10) infinite;
+}
+
+/* Row 7 (index 6): running with acorn (bezel) - right - (ScaleX flip on bezels) */
+.byte-sprite.has-custom-spritesheet[data-state='running_acorn_bezel'] {
+  background-position: 0px calc(-6 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-run-acorn, 0.4s) steps(10) infinite;
+}
+
+/* Row 8 (index 7): burying - right - (ScaleX flip for left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='burying'] {
+  background-position: 0px calc(-7 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-bury, 0.28s) steps(10) infinite;
+}
+
+/* Row 9 (index 8): pointing - right - (ScaleX flip for left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='pointing'] {
+  background-position: 0px calc(-8 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-point, 0.55s) steps(10) infinite;
+}
+
+/* Row 10 (index 9): inspecting - right - (ScaleX flip for left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='inspecting'] {
+  background-position: 0px calc(-9 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-inspect, 0.7s) steps(10) infinite;
+}
+
+/* Row 11 (index 10): knocking - right - (ScaleX flip for left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='knocking'] {
+  background-position: 0px calc(-10 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-knock, 0.48s) steps(10) infinite;
+}
+
+/* Row 12 (index 11): munching - right - (ScaleX flip for left/right) */
+.byte-sprite.has-custom-spritesheet[data-state='munching'] {
+  background-position: 0px calc(-11 * var(--row-h));
+  animation: sprite-steps-10 var(--fps-munch, 0.95s) steps(10) infinite;
+}
+
+@keyframes sprite-steps-10 {
+  from { background-position-x: 0px; }
+  to   { background-position-x: var(--pan-x); }
+}
+
 @keyframes dash-flow {
-  to {
-    stroke-dashoffset: -20;
-  }
+  to { stroke-dashoffset: -20; }
 }
 
 .swarm-edge-active path {
@@ -92,7 +131,6 @@
   animation: dash-flow 0.7s linear infinite;
 }
 
-/* Minimized Bar Orange Pulse when Blocked */
 @keyframes bar-hitl-pulse {
   0%, 100% {
     box-shadow: 0 0 10px rgba(255, 107, 0, 0.35);

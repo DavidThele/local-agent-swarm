@@ -66,6 +66,7 @@ export const App: React.FC = () => {
   const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
     null
   );
+  const hasRootNode = agents.some((a) => a.type === 'Main');
 
   useEffect(() => {
     swarmBridge.fetchSessions().then(setSessions).catch(console.error);
@@ -233,6 +234,7 @@ export const App: React.FC = () => {
           isMinimized={isMinimized}
           isCanvasPanning={isCanvasPanning}
           burySequenceTrigger={burySequenceTrigger}
+          hasRootNode={hasRootNode}
           activeHitlAgentId={activeHitlAgentId}
           failedAgentId={failedAgent?.agent_id || null}
           onBuryComplete={handleAcornBuryComplete}
@@ -400,12 +402,15 @@ export const App: React.FC = () => {
               </div>
 
               {/* Bottom Task Input Dock (Visually collapses into an acorn on Deploy) */}
-              <div className="border-t border-zinc-800/80 bg-[#0A0A0C] px-4 py-3">
+              <div
+                data-mascot-target="task-input-box"
+                className="border-t border-zinc-800/80 bg-[#0A0A0C] px-4 py-3"
+              >
                 <form
                   onSubmit={handleDeploySwarm}
-                  className={`transition-all duration-200 ${
+                  className={`transition-all duration-500 ${
                     isPromptCollapsedToAcorn
-                      ? 'scale-0 opacity-0 pointer-events-none'
+                      ? 'scale-50 opacity-0 pointer-events-none'
                       : 'scale-100 opacity-100'
                   }`}
                 >
