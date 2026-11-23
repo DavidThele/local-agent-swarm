@@ -16,10 +16,14 @@ from AppKit import (
     NSBezierPath,
     NSColor,
     NSCompositingOperationSourceOver,
+    NSEventModifierFlagCommand,
+    NSEventModifierFlagShift,
     NSGraphicsContext,
     NSImage,
     NSImageInterpolationNone,
     NSMakeRect,
+    NSMenu,
+    NSMenuItem,
     NSNormalWindowLevel,
     NSScreen,
     NSWindow,
@@ -155,9 +159,51 @@ def start_backend_server():
             time.sleep(0.1)
 
 
+def build_main_menu():
+    """Creates a standard macOS menu bar with App, Edit, and Window menus so Cmd+V/C/X/A/Z work in WKWebView."""
+    main_menu = NSMenu.alloc().init()
+
+    # App menu
+    app_menu_item = NSMenuItem.alloc().init()
+    main_menu.addItem_(app_menu_item)
+    app_menu = NSMenu.alloc().init()
+    app_menu.addItemWithTitle_action_keyEquivalent_("Hide Local Agent Swarm", "hide:", "h")
+    app_menu.addItem_(NSMenuItem.separatorItem())
+    app_menu.addItemWithTitle_action_keyEquivalent_("Quit Local Agent Swarm", "terminate:", "q")
+    app_menu_item.setSubmenu_(app_menu)
+
+    # Edit menu (required by macOS AppKit for Cmd+C/V/X/A/Z key equivalents in WKWebView)
+    edit_menu_item = NSMenuItem.alloc().init()
+    main_menu.addItem_(edit_menu_item)
+    edit_menu = NSMenu.alloc().initWithTitle_("Edit")
+    edit_menu.addItemWithTitle_action_keyEquivalent_("Undo", "undo:", "z")
+    redo_item = edit_menu.addItemWithTitle_action_keyEquivalent_("Redo", "redo:", "z")
+    redo_item.setKeyEquivalentModifierMask_(NSEventModifierFlagCommand | NSEventModifierFlagShift)
+    edit_menu.addItem_(NSMenuItem.separatorItem())
+    edit_menu.addItemWithTitle_action_keyEquivalent_("Cut", "cut:", "x")
+    edit_menu.addItemWithTitle_action_keyEquivalent_("Copy", "copy:", "c")
+    edit_menu.addItemWithTitle_action_keyEquivalent_("Paste", "paste:", "v")
+    edit_menu.addItemWithTitle_action_keyEquivalent_("Select All", "selectAll:", "a")
+    edit_menu_item.setSubmenu_(edit_menu)
+
+    # Window menu
+    window_menu_item = NSMenuItem.alloc().init()
+    main_menu.addItem_(window_menu_item)
+    window_menu = NSMenu.alloc().initWithTitle_("Window")
+    window_menu.addItemWithTitle_action_keyEquivalent_("Minimize", "performMiniaturize:", "m")
+    window_menu.addItemWithTitle_action_keyEquivalent_("Close", "performClose:", "w")
+    window_menu_item.setSubmenu_(window_menu)
+
+    return main_menu
+
+
 def launch_native_window(url: str):
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+
+    main_menu = build_main_menu()
+    app.setMainMenu_(main_menu)
+    _KEEP_ALIVE.append(main_menu)
 
     app_icon = build_acorn_app_icon()
     if app_icon is not None:

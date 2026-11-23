@@ -299,6 +299,7 @@ def run_agent(
             },
         )
 
+        turn_prompt_chars = len(current_prompt)
         llm_output, chat_history, cost = send_prompt(
             prompt_text=current_prompt,
             model=model_to_use,
@@ -307,8 +308,20 @@ def run_agent(
         )
         
         turn_cost = 0.0
+        turn_tokens = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "thinking_tokens": 0,
+            "total_tokens": 0,
+        }
         if isinstance(cost, dict):
             turn_cost = cost.get("total_cost", 0.0)
+            turn_tokens = {
+                "input_tokens": int(cost.get("input_tokens", 0) or 0),
+                "output_tokens": int(cost.get("output_tokens", 0) or 0),
+                "thinking_tokens": int(cost.get("thinking_tokens", 0) or 0),
+                "total_tokens": int(cost.get("total_tokens", 0) or 0),
+            }
         elif isinstance(cost, (int, float)):
             turn_cost = float(cost)
             
@@ -336,7 +349,12 @@ def run_agent(
             trace_events.append({
                 "iteration": iteration + 1,
                 "llm_output": llm_output,
-                "environment_results": current_prompt
+                "environment_results": current_prompt,
+                "turn_cost_usd": round(turn_cost, 6),
+                "prompt_chars": turn_prompt_chars,
+                "llm_output_chars": len(llm_output or ""),
+                "env_results_chars": len(current_prompt),
+                **turn_tokens,
             })
             continue
 
@@ -399,10 +417,16 @@ def run_agent(
             except Exception as e:
                 results_string += f"[Error] Failed to execute <{cmd.command}>: {str(e)}\n"
 
+        env_res_str = final_result if is_done else results_string.strip()
         trace_events.append({
             "iteration": iteration + 1,
             "llm_output": llm_output,
-            "environment_results": final_result if is_done else results_string.strip()
+            "environment_results": env_res_str,
+            "turn_cost_usd": round(turn_cost, 6),
+            "prompt_chars": turn_prompt_chars,
+            "llm_output_chars": len(llm_output or ""),
+            "env_results_chars": len(env_res_str or ""),
+            **turn_tokens,
         })
 
         if is_done:

@@ -24,11 +24,23 @@ def _parse_int(value, label: str) -> int:
     return parsed
 
 
+def _parse_bool(value, default: bool = False) -> bool:
+    if value is None or str(value).strip() == "":
+        return default
+    raw = str(value).strip().lower()
+    if raw in {"true", "1", "yes"}:
+        return True
+    if raw in {"false", "0", "no"}:
+        return False
+    raise ValueError(f"Expected boolean ('true' or 'false'), got {value!r}.")
+
+
 def _apply_line_edits(original_text: str, edits: list[dict]) -> str:
     """
     Applies one or more 1-based line insert/replace operations against original_text.
-    Edits are validated against the original line count and applied in descending line
-    order so earlier line numbers never shift subsequent edits in the same batch.
+    All line numbers reference original_text BEFORE any edits in this batch.
+    Operations are sorted bottom-up (descending start line) so an earlier insert
+    (e.g., at line 9) never shifts the target index of a later insert (e.g., at line 14).
     """
     lines = original_text.splitlines(keepends=True)
     if lines and not lines[-1].endswith(("\n", "\r")):
@@ -73,9 +85,22 @@ def _apply_line_edits(original_text: str, edits: list[dict]) -> str:
                 "order": idx,
             })
         else:
-            raise ValueError(f"Edit #{idx + 1}: unsupported action {action!r}; expected 'insert' or 'replace'.")
+            raise ValueError(f"Edit #{idx + 1}: unsupported line action {action!r}; expected 'insert' or 'replace'.")
 
-    # Sort descending by start line (and reverse order for ties) so bottom-up edits preserve indices
+    # Validate that no two replace ranges overlap
+    replace_ops = sorted(
+        (op for op in normalized_ops if op["action"] == "replace"),
+        key=lambda op: (op["start"], op["end"]),
+    )
+    for prev, curr in zip(replace_ops, replace_ops[1:]):
+        if curr["start"] <= prev["end"]:
+            raise ValueError(
+                f"Overlapping replace ranges in batch: lines {prev['start']}-{prev['end']} "
+                f"and {curr['start']}-{curr['end']}."
+            )
+
+    # Sort bottom-up: higher start line first. For ties at the same line,
+    # apply later-specified edits first so earlier inserts stay before later ones.
     normalized_ops.sort(key=lambda op: (op["start"], op["order"]), reverse=True)
 
     for op in normalized_ops:
@@ -88,6 +113,76 @@ def _apply_line_edits(original_text: str, edits: list[dict]) -> str:
             lines[start_idx:end_idx] = op["new_lines"]
 
     return "".join(lines)
+
+
+def _apply_search_replace_edits(text: str, edits: list[dict]) -> str:
+    """
+    Applies search-and-replace edits sequentially.
+    When replace_all is False (default), requires an exact single match (errors on 0 or >1).
+    When replace_all is True, replaces all occurrences (errors only on 0 matches).
+    """
+    current = text
+    for idx, edit in enumerate(edits):
+        search = edit.get("search", "")
+        if isinstance(search, list):
+            search = "\n".join(str(x) for x in search)
+        search = str(search)
+
+        replace = edit.get("replace", "")
+        if isinstance(replace, list):
+            replace = "\n".join(str(x) for x in replace)
+        replace = str(replace)
+
+        replace_all = _parse_bool(edit.get("replace_all"), default=False)
+
+        if search == "":
+            raise ValueError(f"Search/Replace edit #{idx + 1}: <Search> text cannot be empty.")
+
+        count = current.count(search)
+        if count == 0:
+            raise ValueError(
+                f"Search/Replace edit #{idx + 1}: <Search> block not found in file."
+            )
+        if count > 1 and not replace_all:
+            raise ValueError(
+                f"Search/Replace edit #{idx + 1}: <Search> block matched {count} times "
+                f"(expected 1). Provide more surrounding context or set replace_all=\"true\"."
+            )
+
+        if replace_all:
+            current = current.replace(search, replace)
+        else:
+            current = current.replace(search, replace, 1)
+
+    return current
+
+
+def _apply_edits(original_text: str, edits: list[dict]) -> str:
+    """
+    Applies a batch of edits: all line-based edits (insert/replace) run first
+    against original_text line numbers (bottom-up), followed by search_replace
+    edits sequentially.
+    """
+    line_edits = []
+    sr_edits = []
+    for idx, edit in enumerate(edits):
+        action = str(edit.get("action", "")).strip().lower()
+        if action in {"insert", "replace"}:
+            line_edits.append(edit)
+        elif action in {"search_replace", "search-replace"}:
+            sr_edits.append(edit)
+        else:
+            raise ValueError(
+                f"Edit #{idx + 1}: unsupported action {action!r}; "
+                f"expected 'insert', 'replace', or 'search_replace'."
+            )
+
+    current = original_text
+    if line_edits:
+        current = _apply_line_edits(current, line_edits)
+    if sr_edits:
+        current = _apply_search_replace_edits(current, sr_edits)
+    return current
 
 
 def _extract_edits(attributes: dict, content: dict | str) -> tuple[str, list[dict] | None, str, str]:
@@ -118,8 +213,24 @@ def _extract_edits(attributes: dict, content: dict | str) -> tuple[str, list[dic
                     "start_line": item.get("StartLine"),
                     "end_line": item.get("EndLine"),
                     "content": item.get("Content", ""),
+                    "search": item.get("Search", ""),
+                    "replace": item.get("Replace", ""),
+                    "replace_all": item.get("ReplaceAll", attributes.get("replace_all", False)),
                 })
             return "edits", edits, "", summary
+
+        # Case 2a: Single search_replace via mode="search_replace" or direct <Search>/<Replace> tags
+        if mode in {"search_replace", "search-replace"} or ("Search" in content and "Replace" in content):
+            search_val = content.get("Search", "")
+            replace_val = content.get("Replace", "")
+            replace_all_val = content.get("ReplaceAll", attributes.get("replace_all", False))
+            single_edit = {
+                "action": "search_replace",
+                "search": search_val[0] if isinstance(search_val, list) else search_val,
+                "replace": replace_val[0] if isinstance(replace_val, list) else replace_val,
+                "replace_all": replace_all_val[0] if isinstance(replace_all_val, list) else replace_all_val,
+            }
+            return "search_replace", [single_edit], "", summary
 
         raw_content = content.get("Content", "")
         full_content = raw_content[0] if isinstance(raw_content, list) else str(raw_content)
@@ -127,7 +238,7 @@ def _extract_edits(attributes: dict, content: dict | str) -> tuple[str, list[dic
         full_content = str(content)
         summary = "Wrote raw content."
 
-    # Case 2: Single-edit via <WriteFile mode="insert" line="N"> or mode="replace"
+    # Case 2b: Single-edit via <WriteFile mode="insert" line="N"> or mode="replace"
     if mode in {"insert", "replace"}:
         single_edit = {
             "action": mode,
@@ -168,7 +279,7 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
             else:
                 old_content = target_file.read_text(encoding="utf-8")
 
-            final_content = _apply_line_edits(old_content, edits)
+            final_content = _apply_edits(old_content, edits)
         else:
             try:
                 old_content = target_file.read_text(encoding="utf-8")

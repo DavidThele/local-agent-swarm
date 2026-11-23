@@ -3,6 +3,21 @@ import uuid
 from pathlib import Path
 from infrastructure.logging import log
 
+IGNORED_DIRS: frozenset[str] = frozenset({
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".backups",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".next",
+    "chrome_profile",
+    ".DS_Store",
+})
+
 def resolve_workspace_path(path: str, workspace_root: str | Path | None = None) -> tuple[Path, Path]:
     root = Path(workspace_root or Path.cwd()).expanduser().resolve()
     requested = Path(path).expanduser()

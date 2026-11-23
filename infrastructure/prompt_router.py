@@ -105,6 +105,10 @@ def send_prompt(
         "output_cost": output_cost,
         "thinking_cost": thinking_cost,
         "total_cost": total_cost,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "thinking_tokens": thinking_tokens,
+        "total_tokens": input_tokens + output_tokens + thinking_tokens,
     }
 
     if print_cost:

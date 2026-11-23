@@ -167,20 +167,7 @@ class AnalyzeSwarmReq(BaseModel):
     user_feedback: str = ""
 
 
-_IGNORED_DIRS = {
-    ".git",
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".backups",
-    ".pytest_cache",
-    "dist",
-    "build",
-    ".next",
-    "chrome_profile",
-    ".DS_Store",
-}
+from infrastructure.workspace import IGNORED_DIRS as _IGNORED_DIRS
 
 
 def _format_analyzer_payload(chat_id: str, analysis: dict[str, Any], duration_sec: float) -> dict[str, Any]:
