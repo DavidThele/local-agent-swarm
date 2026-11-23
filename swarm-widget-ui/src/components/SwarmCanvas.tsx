@@ -58,10 +58,12 @@ const FeedbackAnalyzerNode: React.FC<NodeProps> = ({ data }) => {
 interface SwarmCanvasProps {
   agents: AgentNodeData[];
   selectedAgentId: string | null;
+  cancellingAgentIds: Set<string>;
   rootSpawnClientPos: { x: number; y: number } | null;
   showFeedbackNode: boolean;
   hasAnalyzerReport: boolean;
   onSelectAgent: (agentId: string) => void;
+  onCancelAgent: (agentId: string) => void;
   onSelectFeedbackNode: () => void;
   onPanStateChange: (isPanning: boolean) => void;
 }
@@ -87,10 +89,12 @@ function deterministicJitter(id: string, range: number): number {
 const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
   agents,
   selectedAgentId,
+  cancellingAgentIds,
   rootSpawnClientPos,
   showFeedbackNode,
   hasAnalyzerReport,
   onSelectAgent,
+  onCancelAgent,
   onSelectFeedbackNode,
   onPanStateChange,
 }) => {
@@ -222,7 +226,9 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
       const flowData: AgentFlowNodeData = {
         ...agent,
         isExpanded,
+        isCancelling: cancellingAgentIds.has(agent.agent_id),
         onCollapse: handleCollapse,
+        onCancelAgent,
       };
 
       return {
@@ -309,9 +315,11 @@ const SwarmCanvasInner: React.FC<SwarmCanvasProps> = ({
     agents,
     expandedNodeIds,
     selectedAgentId,
+    cancellingAgentIds,
     rootSpawnClientPos,
     showFeedbackNode,
     hasAnalyzerReport,
+    onCancelAgent,
     screenToFlowPosition,
   ]);
 

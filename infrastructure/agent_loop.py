@@ -1,10 +1,19 @@
 import importlib
 import json
+import os
 import queue
+import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from infrastructure import ui_bridge
+from infrastructure.concurrency import (
+    cancel_agent_tree,
+    get_cancel_reason,
+    register_agent,
+    unregister_agent,
+)
 from infrastructure.logging import log
 from infrastructure.prompt_router import send_prompt
 from infrastructure.parser import parse_llm_output
@@ -12,6 +21,20 @@ from infrastructure.agent_types import AgentType
 
 MAX_WORKER_ITERATIONS = 50
 MAX_ORCHESTRATOR_ITERATIONS = 100
+
+# Customizable per-agent active LLM thinking timeout in seconds (default: 5 minutes).
+# Tracks ONLY time spent waiting for LLM thinking/generation (excludes waiting on child agents,
+# tool execution, and HITL prompts). Override via env var AGENT_THINKING_TIMEOUT_SECONDS
+# or chat_context_state["thinking_timeout_seconds"].
+AGENT_THINKING_TIMEOUT_SECONDS = float(os.environ.get("AGENT_THINKING_TIMEOUT_SECONDS", "300"))
+
+
+class AgentCancelledError(Exception):
+    """Raised when an agent is cancelled via UI or parent cascade."""
+
+
+class AgentThinkingTimeoutError(Exception):
+    """Raised when an agent exceeds its active LLM thinking time budget."""
 
 def _resolve_resource_file(relative_path: str) -> Path:
     """Checks ~/.agents first, then falls back to the repository root."""
@@ -138,27 +161,110 @@ def save_global_trace(chat_context_state: dict, final_status: str = "success"):
     with open(global_trace_file, "w", encoding="utf-8") as f:
         json.dump(global_payload, f, indent=2)
 
-def drain_child_notifications(chat_context_state: dict, block_mode: str | None = None) -> str:
+def _send_prompt_with_guards(
+    *,
+    prompt_text: str,
+    model: str,
+    chat_history: list,
+    google_search: bool,
+    cancel_event: threading.Event,
+    remaining_thinking_seconds: float | None,
+) -> tuple[str, list, dict | float, float]:
+    """
+    Runs send_prompt in a daemon thread so active LLM thinking can be interrupted
+    immediately on cancel_event or when remaining_thinking_seconds expires.
+    Returns (llm_output, chat_history, cost, elapsed_thinking_seconds).
+    """
+    if cancel_event.is_set():
+        raise AgentCancelledError("Agent cancelled before LLM thinking turn.")
+    if remaining_thinking_seconds is not None and remaining_thinking_seconds <= 0:
+        raise AgentThinkingTimeoutError("Agent thinking timeout exhausted.")
+
+    result_box: dict = {}
+    done_event = threading.Event()
+    call_cancel_event = threading.Event()
+
+    def _target():
+        try:
+            result_box["value"] = send_prompt(
+                prompt_text=prompt_text,
+                model=model,
+                chat_history=chat_history,
+                google_search=google_search,
+                cancel_event=call_cancel_event,
+            )
+        except BaseException as exc:
+            result_box["error"] = exc
+        finally:
+            done_event.set()
+
+    worker = threading.Thread(target=_target, daemon=True)
+    started_at = time.monotonic()
+    worker.start()
+
+    while not done_event.wait(timeout=0.1):
+        if cancel_event.is_set():
+            call_cancel_event.set()
+            raise AgentCancelledError("Agent cancelled while thinking.")
+        elapsed = time.monotonic() - started_at
+        if remaining_thinking_seconds is not None and elapsed >= remaining_thinking_seconds:
+            call_cancel_event.set()
+            raise AgentThinkingTimeoutError(f"Thinking time limit reached ({elapsed:.1f}s).")
+
+    elapsed = time.monotonic() - started_at
+    if "error" in result_box:
+        err = result_box["error"]
+        if isinstance(err, InterruptedError) and cancel_event.is_set():
+            raise AgentCancelledError("Agent cancelled while thinking.")
+        raise err
+
+    llm_output, updated_history, cost = result_box["value"]
+    return llm_output, updated_history, cost, elapsed
+
+
+def drain_child_notifications(
+    chat_context_state: dict,
+    block_mode: str | None = None,
+    cancel_event: threading.Event | None = None,
+) -> str:
     """
     Drains any completed child agent results from the parent's notification_queue.
     - block_mode=None: Non-blocking poll (returns immediately if queue is empty).
     - block_mode='any': Blocks until at least 1 active child completes.
     - block_mode='all': Blocks until all currently active children complete.
+    - block_mode=<agent_id>: Blocks until the specific child agent completes.
+    Raises AgentCancelledError immediately if cancel_event is set while waiting.
     """
     notif_queue: queue.Queue = chat_context_state["notification_queue"]
     active_children: dict = chat_context_state["active_children"]
     messages = []
 
+    def _get_interruptible():
+        while True:
+            if cancel_event and cancel_event.is_set():
+                raise AgentCancelledError("Agent cancelled while waiting for child agents.")
+            try:
+                return notif_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
     if block_mode == "any" and active_children and notif_queue.empty():
         log(f"  [AsyncWait] Waiting for next child agent to finish (Active: {list(active_children.keys())})...", "warning")
-        child_id, msg = notif_queue.get(block=True)
+        child_id, msg = _get_interruptible()
         active_children.pop(child_id, None)
         messages.append(msg)
 
     elif block_mode == "all" and active_children:
         log(f"  [AsyncWait] Waiting for ALL {len(active_children)} child agents to finish...", "warning")
         while active_children:
-            child_id, msg = notif_queue.get(block=True)
+            child_id, msg = _get_interruptible()
+            active_children.pop(child_id, None)
+            messages.append(msg)
+
+    elif block_mode and block_mode not in ("any", "all") and block_mode in active_children:
+        log(f"  [AsyncWait] Waiting for child agent '{block_mode}' to finish...", "warning")
+        while block_mode in active_children:
+            child_id, msg = _get_interruptible()
             active_children.pop(child_id, None)
             messages.append(msg)
 
@@ -174,13 +280,15 @@ def drain_child_notifications(chat_context_state: dict, block_mode: str | None =
         return "\n[Completed Child Agent Notifications]\n" + "\n".join(messages) + "\n"
     return ""
 
+
 def run_agent(
     agent_type: AgentType | str,
     instructions: str,
     context: str,
     dod: str,
     chat_context_state: dict,
-    agent_id: str = "main"
+    agent_id: str = "main",
+    thinking_timeout_seconds: float | None = None,
 ) -> dict:
     """
     The core execution loop for a single agent.
@@ -192,9 +300,25 @@ def run_agent(
         chat_context_state["notification_queue"] = queue.Queue()
     if "active_children" not in chat_context_state:
         chat_context_state["active_children"] = {}
-    
+
     chat_context_state.setdefault("workspace_root", str(Path.cwd().resolve()))
     chat_context_state["worker_id"] = agent_id
+
+    cancel_event = register_agent(
+        agent_id=agent_id,
+        parent_id=chat_context_state.get("parent_agent_id"),
+        agent_type=agent_type,
+        cancel_event=chat_context_state.get("cancel_event"),
+    )
+    chat_context_state["cancel_event"] = cancel_event
+
+    resolved_timeout = (
+        thinking_timeout_seconds
+        if thinking_timeout_seconds is not None
+        else chat_context_state.get("thinking_timeout_seconds", AGENT_THINKING_TIMEOUT_SECONDS)
+    )
+    thinking_budget = float(resolved_timeout) if resolved_timeout is not None and float(resolved_timeout) > 0 else None
+    thinking_time_used = 0.0
 
     max_iters = (
         MAX_ORCHESTRATOR_ITERATIONS
@@ -224,253 +348,359 @@ def run_agent(
         },
     )
 
-    system_prompt = load_prompt(agent_type)
-
-    current_prompt = f"{system_prompt}\n\n"
-    current_prompt += "=== YOUR ASSIGNMENT ===\n"
-    current_prompt += f"<Instructions>{instructions}</Instructions>\n"
-    current_prompt += f"<Context>{context}</Context>\n"
-    if dod:
-        current_prompt += f"<DoD>{dod}</DoD>\n"
-    if agent_type is AgentType.MAIN_ORCHESTRATOR and chat_context_state.get("request_chat_title"):
-        current_prompt += (
-            "\n[System Note] Because this is the start of a new session, include a "
-            "<ChatTitle>brief 2-5 word title</ChatTitle> tag in your first response "
-            "to name this conversation directory.\n"
-        )
-
-    model_to_use = agent_type.model
     chat_history = []
     trace_events = []
     past_events = []
     cumulative_cost = 0.0
     past_iterations = 0
+    current_iter = 0
 
-    # -------------------------------------------------------------------------
-    # RESUME HISTORY LOGIC
-    # -------------------------------------------------------------------------
-    chat_dir = Path(chat_context_state.get("local_chat_dir", ""))
-    trace_file = chat_dir / f"{agent_id}_trace.json"
+    def _abort_agent(abort_kind: str, error_msg: str, iter_num: int) -> dict:
+        # Cascade cancellation to any active child agents spawned off this node
+        cancel_agent_tree(agent_id, reason=error_msg)
 
-    if trace_file.exists():
-        try:
-            with open(trace_file, "r", encoding="utf-8") as f:
-                past_data = json.load(f)
-            
-            try:
-                from google.genai import types
-                
-                past_instructions = past_data.get("instructions", "")
-                past_dod = past_data.get("dod", "")
-                past_events = past_data.get("events", [])
-                cumulative_cost = past_data.get("total_cost_usd", 0.0)
-                past_iterations = past_data.get("iterations_used", 0)
-                
-                first_user_text = f"[Archived System Prompt Elided]\n=== PAST ASSIGNMENT ===\n<Instructions>{past_instructions}</Instructions>\n<DoD>{past_dod}</DoD>"
-                
-                for i, ev in enumerate(past_events):
-                    user_text = first_user_text if i == 0 else past_events[i-1].get("environment_results", "[No Results]")
-                    chat_history.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
-                    chat_history.append(types.Content(role="model", parts=[types.Part.from_text(text=ev.get("llm_output", ""))]))
-                    
-                if past_events:
-                    log(f"[Swarm] Resumed session with {len(past_events)} past turns for {agent_id}.", "system")
-                    
-            except ImportError:
-                log("[Swarm] Could not import google.genai.types to reconstruct history.", "warning")
-        except Exception as e:
-            log(f"[Swarm] Failed to load past chat history: {e}", "warning")
-
-    # -------------------------------------------------------------------------
-
-    for iteration in range(max_iters):
-        async_updates = drain_child_notifications(chat_context_state, block_mode=None)
-        if async_updates:
-            current_prompt += f"\n{async_updates}"
-
-        log(f"[{agent_type.value}:{agent_id}] Iteration {iteration + 1}/{max_iters} - Thinking...", "system")
-        ui_bridge.emit(
-            "AGENT_UPDATED",
-            {
-                "agent_id": agent_id,
-                "status": "booting",
-                "current_iteration": iteration + 1,
-                "cost_usd": round(cumulative_cost, 4),
-            },
-        )
-
-        turn_prompt_chars = len(current_prompt)
-        llm_output, chat_history, cost = send_prompt(
-            prompt_text=current_prompt,
-            model=model_to_use,
-            chat_history=chat_history,
-            google_search=True,
-        )
-        
-        turn_cost = 0.0
-        turn_tokens = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "thinking_tokens": 0,
-            "total_tokens": 0,
-        }
-        if isinstance(cost, dict):
-            turn_cost = cost.get("total_cost", 0.0)
-            turn_tokens = {
-                "input_tokens": int(cost.get("input_tokens", 0) or 0),
-                "output_tokens": int(cost.get("output_tokens", 0) or 0),
-                "thinking_tokens": int(cost.get("thinking_tokens", 0) or 0),
-                "total_tokens": int(cost.get("total_tokens", 0) or 0),
-            }
-        elif isinstance(cost, (int, float)):
-            turn_cost = float(cost)
-            
-        cumulative_cost += turn_cost
-
-        ui_bridge.emit(
-            "AGENT_UPDATED",
-            {
-                "agent_id": agent_id,
-                "status": "executing",
-                "current_iteration": iteration + 1,
-                "cost_usd": round(cumulative_cost, 4),
-            },
-        )
-
-        commands = parse_llm_output(llm_output)
-
-        if not commands:
-            if chat_context_state["active_children"]:
-                ui_bridge.emit("AGENT_UPDATED", {"agent_id": agent_id, "status": "waiting"})
-                current_prompt = drain_child_notifications(chat_context_state, block_mode="any")
-                continue
-            current_prompt = "[System Error] No valid XML commands found in your last output. You must use a command or <MarkDone>."
-            
-            trace_events.append({
-                "iteration": iteration + 1,
-                "llm_output": llm_output,
-                "environment_results": current_prompt,
-                "turn_cost_usd": round(turn_cost, 6),
-                "prompt_chars": turn_prompt_chars,
-                "llm_output_chars": len(llm_output or ""),
-                "env_results_chars": len(current_prompt),
-                **turn_tokens,
-            })
-            continue
-
-        results_string = "\n[System Environment Results]\n"
-        is_done = False
-        final_result = None
-        wait_mode = None
-
-        for cmd in commands:
-            log(f"  [{agent_id}] -> Executing <{cmd.command}>...", "system")
-
-            try:
-                module_name = ''.join(['_'+c.lower() if c.isupper() else c for c in cmd.command]).lstrip('_') + "_exec"
-                allowed_commands = agent_type.commands
-                command_name = module_name.removesuffix("_exec")
-                if command_name not in allowed_commands:
-                    results_string += (
-                        f"[Error] Command <{cmd.command}> is not allowed for role "
-                        f"{agent_type.value}.\n\n"
-                    )
-                    continue
-                executor = importlib.import_module(f"command_executors.{module_name}")
-
-                cmd_result = executor.execute(cmd.attributes, cmd.content, chat_context_state)
-
-                ui_bridge.emit(
-                    "COMMAND_LOGGED",
-                    {
-                        "id": f"cmd_{uuid.uuid4().hex[:8]}",
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
-                        "agent_id": agent_id,
-                        "command_type": cmd.command,
-                        "attributes": cmd.attributes,
-                        "payload": cmd.raw,
-                        "result_output": cmd_result,
-                        "is_error": cmd_result.startswith("[Error]") or "DENIED" in cmd_result,
-                    },
-                )
-
-                if cmd_result.startswith("[WAIT_FOR_AGENTS:"):
-                    wait_mode = cmd_result.split(":")[1].rstrip("]")
-                    continue
-
-                if cmd_result.startswith("[STATUS_DONE]"):
-                    if chat_context_state["active_children"]:
-                        active_ids = list(chat_context_state["active_children"].keys())
-                        results_string += (
-                            f"[System Error] Cannot <MarkDone> while child agents are still running in the background: "
-                            f"{active_ids}. Use <WaitForAgents mode=\"all\" /> first.\n\n"
-                        )
-                        continue
-                    is_done = True
-                    final_result = cmd_result
-                    break
-
-                results_string += f"--- Result of <{cmd.command}> ---\n{cmd_result}\n\n"
-
-            except ModuleNotFoundError:
-                results_string += f"[Error] Command <{cmd.command}> does not exist or has no executor.\n"
-            except Exception as e:
-                results_string += f"[Error] Failed to execute <{cmd.command}>: {str(e)}\n"
-
-        env_res_str = final_result if is_done else results_string.strip()
         trace_events.append({
-            "iteration": iteration + 1,
-            "llm_output": llm_output,
-            "environment_results": env_res_str,
-            "turn_cost_usd": round(turn_cost, 6),
-            "prompt_chars": turn_prompt_chars,
-            "llm_output_chars": len(llm_output or ""),
-            "env_results_chars": len(env_res_str or ""),
-            **turn_tokens,
+            "iteration": iter_num,
+            "llm_output": "",
+            "environment_results": error_msg,
+            "turn_cost_usd": 0.0,
+            "thinking_time_used_sec": round(thinking_time_used, 2),
         })
+        save_agent_trace(
+            chat_context_state, agent_id, agent_type, instructions,
+            dod, "failed", past_iterations + iter_num, cumulative_cost, past_events + trace_events
+        )
+        save_global_trace(chat_context_state, final_status="failed")
 
-        if is_done:
-            save_agent_trace(
-                chat_context_state, agent_id, agent_type, instructions,
-                dod, "success", past_iterations + iteration + 1, cumulative_cost, past_events + trace_events
+        ui_bridge.emit(
+            "COMMAND_LOGGED",
+            {
+                "id": f"cmd_{uuid.uuid4().hex[:8]}",
+                "timestamp": datetime.now().strftime("%H:%M:%S"),
+                "agent_id": agent_id,
+                "command_type": abort_kind,
+                "attributes": {},
+                "payload": f"<{abort_kind} agent_id=\"{agent_id}\" />",
+                "result_output": error_msg,
+                "is_error": True,
+            },
+        )
+        ui_bridge.emit(
+            "AGENT_UPDATED",
+            {
+                "agent_id": agent_id,
+                "status": "failed",
+                "current_iteration": iter_num,
+                "cost_usd": round(cumulative_cost, 4),
+                "error_line": error_msg,
+            },
+        )
+        log(f"[{agent_type.value}:{agent_id}] {error_msg}", "error")
+        return {
+            "status": "failed",
+            "cancelled": abort_kind == "Cancel",
+            "timed_out": abort_kind == "Timeout",
+            "result": error_msg,
+        }
+
+    try:
+        if cancel_event.is_set():
+            reason = get_cancel_reason(agent_id) or "Cancelled by user."
+            return _abort_agent("Cancel", f"[Error] Agent '{agent_id}' cancelled: {reason}", 0)
+
+        system_prompt = load_prompt(agent_type)
+
+        current_prompt = f"{system_prompt}\n\n"
+        current_prompt += "=== YOUR ASSIGNMENT ===\n"
+        current_prompt += f"<Instructions>{instructions}</Instructions>\n"
+        current_prompt += f"<Context>{context}</Context>\n"
+        if dod:
+            current_prompt += f"<DoD>{dod}</DoD>\n"
+        if agent_type is AgentType.MAIN_ORCHESTRATOR and chat_context_state.get("request_chat_title"):
+            current_prompt += (
+                "\n[System Note] Because this is the start of a new session, include a "
+                "<ChatTitle>brief 2-5 word title</ChatTitle> tag in your first response "
+                "to name this conversation directory.\n"
             )
-            save_global_trace(chat_context_state, final_status="success")
+
+        model_to_use = agent_type.model
+
+        # -------------------------------------------------------------------------
+        # RESUME HISTORY LOGIC
+        # -------------------------------------------------------------------------
+        chat_dir = Path(chat_context_state.get("local_chat_dir", ""))
+        trace_file = chat_dir / f"{agent_id}_trace.json"
+
+        if trace_file.exists():
+            try:
+                with open(trace_file, "r", encoding="utf-8") as f:
+                    past_data = json.load(f)
+
+                try:
+                    from google.genai import types
+
+                    past_instructions = past_data.get("instructions", "")
+                    past_dod = past_data.get("dod", "")
+                    past_events = past_data.get("events", [])
+                    cumulative_cost = past_data.get("total_cost_usd", 0.0)
+                    past_iterations = past_data.get("iterations_used", 0)
+
+                    first_user_text = f"[Archived System Prompt Elided]\n=== PAST ASSIGNMENT ===\n<Instructions>{past_instructions}</Instructions>\n<DoD>{past_dod}</DoD>"
+
+                    for i, ev in enumerate(past_events):
+                        user_text = first_user_text if i == 0 else past_events[i-1].get("environment_results", "[No Results]")
+                        chat_history.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+                        chat_history.append(types.Content(role="model", parts=[types.Part.from_text(text=ev.get("llm_output", ""))]))
+
+                    if past_events:
+                        log(f"[Swarm] Resumed session with {len(past_events)} past turns for {agent_id}.", "system")
+
+                except ImportError:
+                    log("[Swarm] Could not import google.genai.types to reconstruct history.", "warning")
+            except Exception as e:
+                log(f"[Swarm] Failed to load past chat history: {e}", "warning")
+
+        # -------------------------------------------------------------------------
+
+        for iteration in range(max_iters):
+            current_iter = iteration + 1
+
+            if cancel_event.is_set():
+                reason = get_cancel_reason(agent_id) or "Cancelled by user."
+                return _abort_agent("Cancel", f"[Error] Agent '{agent_id}' cancelled: {reason}", current_iter)
+
+            async_updates = drain_child_notifications(
+                chat_context_state,
+                block_mode=None,
+                cancel_event=cancel_event,
+            )
+            if async_updates:
+                current_prompt += f"\n{async_updates}"
+
+            log(f"[{agent_type.value}:{agent_id}] Iteration {current_iter}/{max_iters} - Thinking...", "system")
             ui_bridge.emit(
                 "AGENT_UPDATED",
                 {
                     "agent_id": agent_id,
-                    "status": "completed",
-                    "current_iteration": iteration + 1,
+                    "status": "booting",
+                    "current_iteration": current_iter,
                     "cost_usd": round(cumulative_cost, 4),
                 },
             )
-            log(f"[{agent_type.value}:{agent_id}] Task Completed Successfully.", "success")
-            return {"status": "success", "result": final_result}
 
-        if wait_mode:
-            if chat_context_state["active_children"]:
-                ui_bridge.emit("AGENT_UPDATED", {"agent_id": agent_id, "status": "waiting"})
-                wait_updates = drain_child_notifications(chat_context_state, block_mode=wait_mode)
-                results_string += f"\n{wait_updates}"
-            else:
-                results_string += "\n[System] <WaitForAgents> called, but no active child agents are running.\n"
+            turn_prompt_chars = len(current_prompt)
+            remaining_thinking = (
+                thinking_budget - thinking_time_used if thinking_budget is not None else None
+            )
+            llm_output, chat_history, cost, turn_thinking_sec = _send_prompt_with_guards(
+                prompt_text=current_prompt,
+                model=model_to_use,
+                chat_history=chat_history,
+                google_search=True,
+                cancel_event=cancel_event,
+                remaining_thinking_seconds=remaining_thinking,
+            )
+            thinking_time_used += turn_thinking_sec
 
-        current_prompt = results_string
+            if cancel_event.is_set():
+                reason = get_cancel_reason(agent_id) or "Cancelled by user."
+                return _abort_agent("Cancel", f"[Error] Agent '{agent_id}' cancelled: {reason}", current_iter)
 
-    save_agent_trace(
-        chat_context_state, agent_id, agent_type, instructions,
-        dod, "failed", past_iterations + max_iters, cumulative_cost, past_events + trace_events
-    )
-    save_global_trace(chat_context_state, final_status="failed")
-    ui_bridge.emit(
-        "AGENT_UPDATED",
-        {
-            "agent_id": agent_id,
-            "status": "failed",
-            "current_iteration": max_iters,
-            "cost_usd": round(cumulative_cost, 4),
-            "error_line": f"Agent hit maximum iteration limit ({max_iters}/{max_iters}).",
-        },
-    )
-    log(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({max_iters}). Terminating loop.", "error")
-    return {"status": "failed", "result": "[System Error] Agent hit the maximum iteration limit without completing the DoD."}
+            turn_cost = 0.0
+            turn_tokens = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "thinking_tokens": 0,
+                "total_tokens": 0,
+            }
+            if isinstance(cost, dict):
+                turn_cost = cost.get("total_cost", 0.0)
+                turn_tokens = {
+                    "input_tokens": int(cost.get("input_tokens", 0) or 0),
+                    "output_tokens": int(cost.get("output_tokens", 0) or 0),
+                    "thinking_tokens": int(cost.get("thinking_tokens", 0) or 0),
+                    "total_tokens": int(cost.get("total_tokens", 0) or 0),
+                }
+            elif isinstance(cost, (int, float)):
+                turn_cost = float(cost)
+
+            cumulative_cost += turn_cost
+
+            ui_bridge.emit(
+                "AGENT_UPDATED",
+                {
+                    "agent_id": agent_id,
+                    "status": "executing",
+                    "current_iteration": current_iter,
+                    "cost_usd": round(cumulative_cost, 4),
+                },
+            )
+
+            commands = parse_llm_output(llm_output)
+
+            if not commands:
+                if chat_context_state["active_children"]:
+                    ui_bridge.emit("AGENT_UPDATED", {"agent_id": agent_id, "status": "waiting"})
+                    current_prompt = drain_child_notifications(
+                        chat_context_state,
+                        block_mode="any",
+                        cancel_event=cancel_event,
+                    )
+                    continue
+                current_prompt = "[System Error] No valid XML commands found in your last output. You must use a command or <MarkDone>."
+
+                trace_events.append({
+                    "iteration": current_iter,
+                    "llm_output": llm_output,
+                    "environment_results": current_prompt,
+                    "turn_cost_usd": round(turn_cost, 6),
+                    "turn_thinking_sec": round(turn_thinking_sec, 2),
+                    "prompt_chars": turn_prompt_chars,
+                    "llm_output_chars": len(llm_output or ""),
+                    "env_results_chars": len(current_prompt),
+                    **turn_tokens,
+                })
+                continue
+
+            results_string = "\n[System Environment Results]\n"
+            is_done = False
+            final_result = None
+            wait_mode = None
+
+            for cmd in commands:
+                if cancel_event.is_set():
+                    reason = get_cancel_reason(agent_id) or "Cancelled by user."
+                    return _abort_agent("Cancel", f"[Error] Agent '{agent_id}' cancelled: {reason}", current_iter)
+
+                log(f"  [{agent_id}] -> Executing <{cmd.command}>...", "system")
+
+                try:
+                    module_name = ''.join(['_'+c.lower() if c.isupper() else c for c in cmd.command]).lstrip('_') + "_exec"
+                    allowed_commands = agent_type.commands
+                    command_name = module_name.removesuffix("_exec")
+                    if command_name not in allowed_commands:
+                        results_string += (
+                            f"[Error] Command <{cmd.command}> is not allowed for role "
+                            f"{agent_type.value}.\n\n"
+                        )
+                        continue
+                    executor = importlib.import_module(f"command_executors.{module_name}")
+
+                    cmd_result = executor.execute(cmd.attributes, cmd.content, chat_context_state)
+
+                    if cancel_event.is_set():
+                        reason = get_cancel_reason(agent_id) or "Cancelled by user."
+                        return _abort_agent("Cancel", f"[Error] Agent '{agent_id}' cancelled: {reason}", current_iter)
+
+                    ui_bridge.emit(
+                        "COMMAND_LOGGED",
+                        {
+                            "id": f"cmd_{uuid.uuid4().hex[:8]}",
+                            "timestamp": datetime.now().strftime("%H:%M:%S"),
+                            "agent_id": agent_id,
+                            "command_type": cmd.command,
+                            "attributes": cmd.attributes,
+                            "payload": cmd.raw,
+                            "result_output": cmd_result,
+                            "is_error": cmd_result.startswith("[Error]") or "DENIED" in cmd_result,
+                        },
+                    )
+
+                    if cmd_result.startswith("[WAIT_FOR_AGENTS:"):
+                        wait_mode = cmd_result.split(":")[1].rstrip("]")
+                        continue
+
+                    if cmd_result.startswith("[STATUS_DONE]"):
+                        if chat_context_state["active_children"]:
+                            active_ids = list(chat_context_state["active_children"].keys())
+                            results_string += (
+                                f"[System Error] Cannot <MarkDone> while child agents are still running in the background: "
+                                f"{active_ids}. Use <WaitForAgents mode=\"all\" /> first.\n\n"
+                            )
+                            continue
+                        is_done = True
+                        final_result = cmd_result
+                        break
+
+                    results_string += f"--- Result of <{cmd.command}> ---\n{cmd_result}\n\n"
+
+                except ModuleNotFoundError:
+                    results_string += f"[Error] Command <{cmd.command}> does not exist or has no executor.\n"
+                except Exception as e:
+                    results_string += f"[Error] Failed to execute <{cmd.command}>: {str(e)}\n"
+
+            env_res_str = final_result if is_done else results_string.strip()
+            trace_events.append({
+                "iteration": current_iter,
+                "llm_output": llm_output,
+                "environment_results": env_res_str,
+                "turn_cost_usd": round(turn_cost, 6),
+                "turn_thinking_sec": round(turn_thinking_sec, 2),
+                "prompt_chars": turn_prompt_chars,
+                "llm_output_chars": len(llm_output or ""),
+                "env_results_chars": len(env_res_str or ""),
+                **turn_tokens,
+            })
+
+            if is_done:
+                save_agent_trace(
+                    chat_context_state, agent_id, agent_type, instructions,
+                    dod, "success", past_iterations + current_iter, cumulative_cost, past_events + trace_events
+                )
+                save_global_trace(chat_context_state, final_status="success")
+                ui_bridge.emit(
+                    "AGENT_UPDATED",
+                    {
+                        "agent_id": agent_id,
+                        "status": "completed",
+                        "current_iteration": current_iter,
+                        "cost_usd": round(cumulative_cost, 4),
+                    },
+                )
+                log(f"[{agent_type.value}:{agent_id}] Task Completed Successfully.", "success")
+                return {"status": "success", "result": final_result}
+
+            if wait_mode:
+                if chat_context_state["active_children"]:
+                    ui_bridge.emit("AGENT_UPDATED", {"agent_id": agent_id, "status": "waiting"})
+                    wait_updates = drain_child_notifications(
+                        chat_context_state,
+                        block_mode=wait_mode,
+                        cancel_event=cancel_event,
+                    )
+                    results_string += f"\n{wait_updates}"
+                else:
+                    results_string += "\n[System] <WaitForAgents> called, but no active child agents are running.\n"
+
+            current_prompt = results_string
+
+        save_agent_trace(
+            chat_context_state, agent_id, agent_type, instructions,
+            dod, "failed", past_iterations + max_iters, cumulative_cost, past_events + trace_events
+        )
+        save_global_trace(chat_context_state, final_status="failed")
+        ui_bridge.emit(
+            "AGENT_UPDATED",
+            {
+                "agent_id": agent_id,
+                "status": "failed",
+                "current_iteration": max_iters,
+                "cost_usd": round(cumulative_cost, 4),
+                "error_line": f"Agent hit maximum iteration limit ({max_iters}/{max_iters}).",
+            },
+        )
+        log(f"[{agent_type.value}:{agent_id}] HIT HARD ITERATION CAP ({max_iters}). Terminating loop.", "error")
+        return {"status": "failed", "result": "[System Error] Agent hit the maximum iteration limit without completing the DoD."}
+
+    except AgentCancelledError:
+        reason = get_cancel_reason(agent_id) or "Cancelled by user."
+        return _abort_agent("Cancel", f"[Error] Agent '{agent_id}' cancelled: {reason}", current_iter)
+    except AgentThinkingTimeoutError:
+        budget_label = f"{thinking_budget:.0f}s" if thinking_budget is not None else "configured limit"
+        return _abort_agent(
+            "Timeout",
+            f"[Error] Agent '{agent_id}' exceeded its active thinking timeout ({budget_label}).",
+            current_iter,
+        )
+    finally:
+        unregister_agent(agent_id)

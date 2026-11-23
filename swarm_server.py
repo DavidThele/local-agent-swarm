@@ -18,8 +18,14 @@ from pydantic import BaseModel
 load_dotenv()
 
 from infrastructure import ui_bridge
-from infrastructure.agent_loop import MAX_ORCHESTRATOR_ITERATIONS, MAX_WORKER_ITERATIONS, run_agent
+from infrastructure.agent_loop import (
+    AGENT_THINKING_TIMEOUT_SECONDS,
+    MAX_ORCHESTRATOR_ITERATIONS,
+    MAX_WORKER_ITERATIONS,
+    run_agent,
+)
 from infrastructure.agent_types import AgentType
+from infrastructure.concurrency import cancel_agent_tree
 from infrastructure.logging import log
 from infrastructure.workspace import create_chat_instance, init_global_workspace
 from pipelines.swarm_analyzer import analyze_session
@@ -167,6 +173,11 @@ class AnalyzeSwarmReq(BaseModel):
     user_feedback: str = ""
 
 
+class CancelAgentReq(BaseModel):
+    agent_id: str
+    reason: str = "Cancelled by user."
+
+
 from infrastructure.workspace import IGNORED_DIRS as _IGNORED_DIRS
 
 
@@ -189,6 +200,7 @@ def get_config():
         "workspace_root": str(_ACTIVE_WORKSPACE),
         "chroma_status": _check_chroma_status(),
         "connected_tools": ["Zsh", "FileIO", "ChromeCDP", "ChromaDB"],
+        "agent_thinking_timeout_seconds": AGENT_THINKING_TIMEOUT_SECONDS,
     }
 
 
@@ -453,7 +465,7 @@ def deploy_swarm(req: DeploySwarmReq):
                 },
             )
 
-            if req.run_optimizer:
+            if req.run_optimizer and not result.get("cancelled"):
                 opt_started = time.time()
                 analysis = analyze_session(final_chat_dir)
                 if analysis.get("status") == "completed":
@@ -507,6 +519,14 @@ def resolve_hitl_http(req: HitlResolveReq):
     return {"status": "resolved"}
 
 
+@app.post("/api/swarm/cancel")
+def cancel_agent_http(req: CancelAgentReq):
+    cancelled_ids = cancel_agent_tree(req.agent_id, reason=req.reason)
+    if not cancelled_ids:
+        raise HTTPException(status_code=404, detail=f"Agent '{req.agent_id}' is not active")
+    return {"status": "cancelling", "cancelled_agent_ids": cancelled_ids}
+
+
 # ============================================================================
 # WEBSOCKET STREAM
 # ============================================================================
@@ -519,7 +539,8 @@ async def swarm_ws(websocket: WebSocket):
         while True:
             raw = await websocket.receive_text()
             msg = json.loads(raw)
-            if msg.get("type") == "HITL_RESPONSE":
+            msg_type = msg.get("type")
+            if msg_type == "HITL_RESPONSE":
                 p = msg.get("payload", {})
                 ui_bridge.resolve_hitl(
                     blocker_id=p.get("blocker_id", ""),
@@ -527,6 +548,14 @@ async def swarm_ws(websocket: WebSocket):
                     action=p.get("action", "deny"),
                     value=p.get("value", ""),
                 )
+            elif msg_type == "CANCEL_AGENT":
+                p = msg.get("payload", {})
+                target_id = str(p.get("agent_id", "")).strip()
+                if target_id:
+                    cancel_agent_tree(
+                        target_id,
+                        reason=str(p.get("reason") or "Cancelled by user."),
+                    )
     except WebSocketDisconnect:
         pass
     finally:

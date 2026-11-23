@@ -1,5 +1,6 @@
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from infrastructure import ui_bridge
 from infrastructure.logging import log
@@ -95,23 +96,46 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
             if approval.strip().lower() != "y":
                 return "[System] Command execution denied by user."
 
-    # Execute inside the active workspace_root
+    # Execute inside the active workspace_root (interruptible via cancel_event)
+    cancel_event = context_state.get("cancel_event")
+    if cancel_event and cancel_event.is_set():
+        return "[Error] Command cancelled by user."
+
+    proc = None
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command_args,
             shell=False,
             cwd=context_state.get("workspace_root") or None,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout
         )
+        deadline = time.monotonic() + timeout
+        while proc.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return "[Error] Command cancelled by user."
+            if time.monotonic() >= deadline:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return f"[Error] Command timed out after {timeout} seconds."
+            time.sleep(0.05)
 
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
+        stdout_raw, stderr_raw = proc.communicate()
+        stdout = (stdout_raw or "").strip()
+        stderr = (stderr_raw or "").strip()
 
         output = []
-        if result.returncode != 0:
-            output.append(f"[Error] Command exited with status {result.returncode}.")
+        if proc.returncode != 0:
+            output.append(f"[Error] Command exited with status {proc.returncode}.")
         if stdout:
             output.append(f"STDOUT:\n{stdout}")
         if stderr:
@@ -119,7 +143,7 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
 
         return "\n".join(output) if output else "[System] Command executed successfully with no output."
 
-    except subprocess.TimeoutExpired:
-        return f"[Error] Command timed out after {timeout} seconds."
     except Exception as e:
+        if proc and proc.poll() is None:
+            proc.kill()
         return f"[Error] Execution failed: {str(e)}"

@@ -1,15 +1,7 @@
-# Global Agents Profile & Context
+# Global Agents Profile &amp; Context
 
-This file contains the foundational system context, user profile, and global rules for all agents in the swarm. 
+Foundational system context, user profile, and global rules for all swarm agents.
 
-> **Note:** The Optimizer agent will append and modify this file dynamically.
-
-___
-
-User preferences and rules are appended below in as much specificity as possible:
-
-### Swarm Orchestration & Delegation Rules
-- **Parallel Workload Partitioning:**
-  - When a task involves processing multiple independent files (e.g., file inspection, batch summarization, formatting, or test generation across >5 files), Orchestrators and Sub-Orchestrators **must** partition the file list and spawn multiple concurrent workers (e.g., 3–5 workers) in parallel.
-  - Never delegate a large multi-file batch to a single worker, as workers have strict iteration limits (typically 10 iterations) and accumulated file reads lead to context window saturation and unnecessary cost.
-___
+### Swarm Orchestration &amp; Delegation Rules
+- **Discover Before Partitioning:** Never guess file paths or lists. When target files are unknown, list verified paths first, then partition the confirmed list.
+- **Parallel Workload Partitioning:** For tasks across over numerous independent files (inspection, summarization, formatting, tests), Orchestrators and Sub-Orchestrators **must** partition the verified file list across 3–5 concurrent workers. Never assign a large multi-file batch to one worker (strict ~10-iteration limit and context saturation).

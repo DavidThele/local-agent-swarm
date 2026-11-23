@@ -62,6 +62,7 @@ export interface ISwarmBridge {
     agentId: string,
     resolution: { action: 'approve' | 'deny' | 'answer' | 'resume'; value?: string }
   ): Promise<void>;
+  cancelAgent(agentId: string, reason?: string): Promise<{ cancelled_agent_ids: string[] }>;
 }
 
 class LiveSwarmBridge implements ISwarmBridge {
@@ -196,6 +197,22 @@ class LiveSwarmBridge implements ISwarmBridge {
         body: JSON.stringify({ blocker_id: blockerId, agent_id: agentId, ...resolution }),
       });
     }
+  }
+
+  async cancelAgent(
+    agentId: string,
+    reason = 'Cancelled by user.'
+  ): Promise<{ cancelled_agent_ids: string[] }> {
+    const res = await fetch(`${BACKEND_CONFIG.REST_BASE_URL}/swarm/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: agentId, reason }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Cancel request failed' }));
+      throw new Error(err.detail || 'Cancel request failed');
+    }
+    return res.json();
   }
 }
 
@@ -652,6 +669,57 @@ class MockSwarmBridge implements ISwarmBridge {
         payload: { overall_status: 'Success', total_cost_usd: 0.48 },
       });
     });
+  }
+
+  async cancelAgent(
+    agentId: string,
+    reason = 'Cancelled by user.'
+  ): Promise<{ cancelled_agent_ids: string[] }> {
+    const mockTree: Record<string, string[]> = {
+      orch_root: ['orch_root', 'sub_api', 'sub_ui', 'worker_db9', 'worker_fs4', 'worker_cdp2'],
+      sub_api: ['sub_api', 'worker_db9', 'worker_fs4'],
+      sub_ui: ['sub_ui', 'worker_cdp2'],
+    };
+    const targets = mockTree[agentId] || [agentId];
+    if (agentId === 'orch_root') {
+      this.clearTimers();
+    }
+
+    for (const id of targets) {
+      const msg =
+        id === agentId
+          ? `[Error] Agent '${id}' cancelled: ${reason}`
+          : `[Error] Agent '${id}' cancelled: Cancelled because parent agent '${agentId}' was cancelled.`;
+      this.emit({
+        type: 'COMMAND_LOGGED',
+        payload: {
+          id: `cmd_${Date.now()}_cancel_${id}`,
+          timestamp: new Date().toLocaleTimeString(),
+          agent_id: id,
+          command_type: 'Cancel',
+          payload: `<Cancel agent_id="${id}" />`,
+          result_output: msg,
+          is_error: true,
+        },
+      });
+      this.emit({
+        type: 'AGENT_UPDATED',
+        payload: {
+          agent_id: id,
+          status: 'failed',
+          active_blocker: null,
+          error_line: msg,
+        },
+      });
+    }
+
+    if (agentId === 'orch_root') {
+      this.emit({
+        type: 'SESSION_UPDATED',
+        payload: { overall_status: 'Failed' },
+      });
+    }
+    return { cancelled_agent_ids: targets };
   }
 }
 

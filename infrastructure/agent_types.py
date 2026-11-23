@@ -46,11 +46,17 @@ class AgentType(str, Enum):
                 "mark_done",
                 "chrome",
                 "wait_for_user",
+                "read_file",
+                "list_directory",
+                "zsh",
             ),
             AgentType.SUB_ORCHESTRATOR: (
                 "spawn_agent",
                 "wait_for_agents",
                 "mark_done",
+                "read_file",
+                "list_directory",
+                "zsh",
             ),
             AgentType.WORKER: (
                 "zsh",

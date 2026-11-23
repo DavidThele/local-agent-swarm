@@ -35,7 +35,9 @@ export interface CommandEvent {
     | 'SearchDB'
     | 'SpawnAgent'
     | 'WaitForAgents'
-    | 'MarkDone';
+    | 'MarkDone'
+    | 'Cancel'
+    | 'Timeout';
   attributes?: Record<string, string>;
   payload: string;
   result_output?: string;

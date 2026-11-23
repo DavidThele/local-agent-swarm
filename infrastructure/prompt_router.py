@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import time
 
 from google import genai
@@ -27,7 +28,11 @@ def send_prompt(
     image_data=None,
     media_files=None,
     google_search=False,
+    cancel_event: threading.Event | None = None,
 ):
+    if cancel_event and cancel_event.is_set():
+        raise InterruptedError("Prompt cancelled before dispatch.")
+
     if chat_history is None:
         chat_history = []
 
@@ -58,6 +63,8 @@ def send_prompt(
         )
 
     for attempt, delay in enumerate(delays, start=1):
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Prompt cancelled.")
         try:
             log(f"Calling generate_content with model = {repr(model)}", "debug")
             response = client.models.generate_content(
@@ -72,10 +79,16 @@ def send_prompt(
                     f"[Router] 429 RESOURCE_EXHAUSTED encountered on attempt {attempt}/3. Sleeping for {delay}s...",
                     "warning",
                 )
-                time.sleep(delay)
+                if cancel_event:
+                    if cancel_event.wait(delay):
+                        raise InterruptedError("Prompt cancelled during retry backoff.")
+                else:
+                    time.sleep(delay)
             else:
                 raise
     else:
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Prompt cancelled.")
         try:
             log(f"Final retry calling generate_content with model = {repr(model)}", "debug")
             response = client.models.generate_content(

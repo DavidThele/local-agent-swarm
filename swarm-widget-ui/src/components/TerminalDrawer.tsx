@@ -11,6 +11,7 @@ import {
   Sparkles,
   Loader2,
   FileBarChart2,
+  OctagonX,
 } from 'lucide-react';
 import { AgentNodeData, AnalyzerReport, CommandEvent, HITLBlocker } from '../types/swarm';
 import { HitlActionCenter } from './HitlActionCenter';
@@ -19,6 +20,7 @@ interface TerminalDrawerProps {
   isOpen: boolean;
   isFeedbackMode: boolean;
   selectedAgent: AgentNodeData | null;
+  isCancellingSelected: boolean;
   allLogs: CommandEvent[];
   activeBlockers: HITLBlocker[];
   highlightError: boolean;
@@ -29,6 +31,7 @@ interface TerminalDrawerProps {
   onFeedbackTextChange: (value: string) => void;
   onRunAnalyzer: (feedback: string) => void;
   onOpenAnalyzerModal: () => void;
+  onCancelAgent: (agentId: string) => void;
   onClose: () => void;
   onClearAgentFilter: () => void;
   onResolveHitl: (
@@ -121,6 +124,7 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
   isOpen,
   isFeedbackMode,
   selectedAgent,
+  isCancellingSelected,
   allLogs,
   activeBlockers,
   highlightError,
@@ -131,6 +135,7 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
   onFeedbackTextChange,
   onRunAnalyzer,
   onOpenAnalyzerModal,
+  onCancelAgent,
   onClose,
   onClearAgentFilter,
   onResolveHitl,
@@ -298,6 +303,29 @@ export const TerminalDrawer: React.FC<TerminalDrawerProps> = ({
           </button>
         </div>
       </div>
+
+      {selectedAgent &&
+        selectedAgent.status !== 'completed' &&
+        selectedAgent.status !== 'failed' && (
+          <div className="flex items-center justify-between gap-2 border-b border-zinc-800/80 bg-[#120d0d] px-4 py-2">
+            <span className="truncate font-mono text-[10px] text-zinc-400">
+              {selectedAgent.type === 'Main'
+                ? 'Cancelling root stops the entire swarm'
+                : selectedAgent.type === 'Sub'
+                ? 'Cancelling also stops all spawned workers'
+                : 'Reports error to parent orchestrator'}
+            </span>
+            <button
+              type="button"
+              disabled={isCancellingSelected}
+              onClick={() => onCancelAgent(selectedAgent.agent_id)}
+              className="flex shrink-0 items-center gap-1.5 rounded-md border border-[#8a3a3a] bg-[#1e1111] px-2.5 py-1 font-mono text-[10px] font-semibold text-[#c77575] transition hover:border-[#a85454] hover:bg-[#2a1515] hover:text-[#e39696] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <OctagonX className="h-3 w-3" />
+              <span>{isCancellingSelected ? 'Cancelling...' : 'Cancel Processing'}</span>
+            </button>
+          </div>
+        )}
 
       {relevantBlockers.map((blk) => (
         <HitlActionCenter key={blk.blocker_id} blocker={blk} onResolve={onResolveHitl} />

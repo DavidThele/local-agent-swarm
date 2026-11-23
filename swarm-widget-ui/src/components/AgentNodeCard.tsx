@@ -1,11 +1,22 @@
 import React from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
-import { Crown, GitFork, Cog, ShieldAlert, HelpCircle, UserCheck, Minimize2 } from 'lucide-react';
+import {
+  Crown,
+  GitFork,
+  Cog,
+  ShieldAlert,
+  HelpCircle,
+  UserCheck,
+  Minimize2,
+  OctagonX,
+} from 'lucide-react';
 import { AgentNodeData } from '../types/swarm';
 
 export interface AgentFlowNodeData extends AgentNodeData {
   isExpanded?: boolean;
+  isCancelling?: boolean;
   onCollapse?: (agentId: string) => void;
+  onCancelAgent?: (agentId: string) => void;
 }
 
 export const AgentNodeCard: React.FC<NodeProps> = ({ data }) => {
@@ -170,6 +181,31 @@ export const AgentNodeCard: React.FC<NodeProps> = ({ data }) => {
           Iter {node.current_iteration}/{node.max_iterations}
         </span>
       </div>
+
+      {/* Cancel Processing Action (Active Nodes Only) */}
+      {node.onCancelAgent &&
+        node.status !== 'completed' &&
+        node.status !== 'failed' && (
+          <button
+            type="button"
+            disabled={Boolean(node.isCancelling)}
+            onClick={(e) => {
+              e.stopPropagation();
+              node.onCancelAgent?.(node.agent_id);
+            }}
+            title={
+              node.type === 'Main'
+                ? 'Cancel entire swarm run'
+                : node.type === 'Sub'
+                ? 'Cancel this sub-orchestrator and all workers spawned off it'
+                : 'Cancel this worker and report error to parent orchestrator'
+            }
+            className="mt-2.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-[#8a3a3a]/80 bg-[#1a1010] px-2.5 py-1.5 font-mono text-[10px] font-semibold text-[#c77575] transition hover:border-[#a85454] hover:bg-[#241313] hover:text-[#e39696] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <OctagonX className="h-3 w-3" />
+            <span>{node.isCancelling ? 'Cancelling...' : 'Cancel Processing'}</span>
+          </button>
+        )}
 
       {node.type !== 'Worker' && (
         <Handle

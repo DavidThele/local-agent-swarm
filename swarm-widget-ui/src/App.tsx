@@ -104,6 +104,7 @@ export const App: React.FC = () => {
   const [feedbackText, setFeedbackText] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzerError, setAnalyzerError] = useState<string | null>(null);
+  const [cancellingAgentIds, setCancellingAgentIds] = useState<Set<string>>(new Set());
 
   // Event Buffer: Agents start immediately on Deploy; events buffer until Byte finishes burying the acorn
   const isAwaitingBuryRef = useRef<boolean>(false);
@@ -141,6 +142,14 @@ export const App: React.FC = () => {
             a.agent_id === event.payload.agent_id ? { ...a, ...event.payload } : a
           )
         );
+        if (event.payload.status === 'failed' || event.payload.status === 'completed') {
+          setCancellingAgentIds((prev) => {
+            if (!prev.has(event.payload.agent_id)) return prev;
+            const next = new Set(prev);
+            next.delete(event.payload.agent_id);
+            return next;
+          });
+        }
         break;
       case 'COMMAND_LOGGED':
         setLogs((prev) => [...prev, event.payload]);
@@ -464,6 +473,31 @@ export const App: React.FC = () => {
     setIsDrawerOpen(true);
   };
 
+  const handleCancelAgent = useCallback(async (agentId: string) => {
+    setCancellingAgentIds((prev) => {
+      const next = new Set(prev);
+      next.add(agentId);
+      return next;
+    });
+    try {
+      const res = await swarmBridge.cancelAgent(agentId);
+      if (res?.cancelled_agent_ids?.length) {
+        setCancellingAgentIds((prev) => {
+          const next = new Set(prev);
+          res.cancelled_agent_ids.forEach((id) => next.add(id));
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error('Failed to cancel agent:', err);
+      setCancellingAgentIds((prev) => {
+        const next = new Set(prev);
+        next.delete(agentId);
+        return next;
+      });
+    }
+  }, []);
+
   const handleExpandFromKnock = () => {
     setIsMinimized(false);
     const targetId = activeHitlAgentId || failedAgent?.agent_id || null;
@@ -779,10 +813,12 @@ export const App: React.FC = () => {
                   <SwarmCanvas
                     agents={agents}
                     selectedAgentId={selectedAgentId}
+                    cancellingAgentIds={cancellingAgentIds}
                     rootSpawnClientPos={rootSpawnClientPos}
                     showFeedbackNode={showFeedbackNode}
                     hasAnalyzerReport={Boolean(analyzerReport)}
                     onSelectAgent={handleSelectAgentOnCanvas}
+                    onCancelAgent={handleCancelAgent}
                     onSelectFeedbackNode={handleSelectFeedbackNode}
                     onPanStateChange={setIsCanvasPanning}
                   />
@@ -949,6 +985,9 @@ export const App: React.FC = () => {
               isOpen={isDrawerOpen}
               isFeedbackMode={isFeedbackMode}
               selectedAgent={selectedAgent}
+              isCancellingSelected={Boolean(
+                selectedAgent && cancellingAgentIds.has(selectedAgent.agent_id)
+              )}
               allLogs={logs}
               activeBlockers={blockers}
               highlightError={highlightErrorInDrawer}
@@ -959,6 +998,7 @@ export const App: React.FC = () => {
               onFeedbackTextChange={setFeedbackText}
               onRunAnalyzer={handleRunAnalyzer}
               onOpenAnalyzerModal={() => setShowReportModal(true)}
+              onCancelAgent={handleCancelAgent}
               onClose={() => setIsDrawerOpen(false)}
               onClearAgentFilter={() => setSelectedAgentId(null)}
               onResolveHitl={(blockerId, agentId, resolution) =>
