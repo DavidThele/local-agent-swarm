@@ -1,6 +1,7 @@
 from enum import Enum
+import os
 
-from infrastructure.models import GEMINI_3_1_FLASH_LITE, GEMINI_3_8_FLASH
+from infrastructure.models import GEMINI_4_HYDROGEN
 
 
 class AgentType(str, Enum):
@@ -70,9 +71,29 @@ class AgentType(str, Enum):
         }[self]
 
     @property
-    def model(self):
-        return (
-            GEMINI_3_8_FLASH
-            if self is AgentType.MAIN_ORCHESTRATOR
-            else GEMINI_3_1_FLASH_LITE
-        )
+    def model(self) -> str:
+        env_key = f"AGENT_MODEL_{self.name}"
+        return os.environ.get(env_key) or AGENT_MODEL_DEFAULTS[self]
+
+    @property
+    def thinking_level(self) -> str:
+        env_key = f"AGENT_THINKING_{self.name}"
+        return os.environ.get(env_key) or AGENT_THINKING_LEVEL_DEFAULTS[self]
+
+
+# Customizable default models and thinking levels per agent role.
+# Override either here or via env vars:
+#   AGENT_MODEL_MAIN_ORCHESTRATOR / AGENT_THINKING_MAIN_ORCHESTRATOR
+#   AGENT_MODEL_SUB_ORCHESTRATOR  / AGENT_THINKING_SUB_ORCHESTRATOR
+#   AGENT_MODEL_WORKER            / AGENT_THINKING_WORKER
+AGENT_MODEL_DEFAULTS: dict[AgentType, str] = {
+    AgentType.MAIN_ORCHESTRATOR: GEMINI_4_HYDROGEN,
+    AgentType.SUB_ORCHESTRATOR: GEMINI_4_HYDROGEN,
+    AgentType.WORKER: GEMINI_4_HYDROGEN,
+}
+
+AGENT_THINKING_LEVEL_DEFAULTS: dict[AgentType, str] = {
+    AgentType.MAIN_ORCHESTRATOR: "High",
+    AgentType.SUB_ORCHESTRATOR: "High",
+    AgentType.WORKER: "Medium",
+}

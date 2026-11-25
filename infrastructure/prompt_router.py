@@ -1,23 +1,111 @@
 import os
-import sys
 import threading
-import time
 
-from google import genai
-from google.genai import types
-from google.genai.errors import APIError
-from infrastructure.logging import log
-from infrastructure.models import (  # noqa: F401 - re-exported for callers importing constants from here
-    GEMINI_3_1_FLASH_LITE,
-    get_resolved_pricing,
+from infrastructure.api_prompt_router import (  # noqa: F401 - re-exported for backward compatibility
+    ApiPromptRouter,
+    client,
+    pricing,
 )
+from infrastructure.models import GEMINI_3_1_FLASH_LITE  # noqa: F401
+from infrastructure.web_prompt_router import WebPromptRouter
 
-# Resolve active pricing table at import time
-pricing = get_resolved_pricing()
+DEFAULT_BACKEND = "api"
+VALID_BACKENDS = ("api", "web")
+USERS = {
+    "subscribed": 0,
+    "personal": 1,
+}
+USER = 0
 
-project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
-client = genai.Client(vertexai=True, project=project, location="global")
+class PromptRouter:
+    """Routes prompts to either the Vertex AI API router or the AI Studio Web router."""
+
+    def __init__(
+        self,
+        api_router: ApiPromptRouter | None = None,
+        web_router: WebPromptRouter | None = None,
+    ):
+        self.api_router = api_router or ApiPromptRouter()
+        self.web_router = web_router or WebPromptRouter()
+
+    def send_prompt(
+        self,
+        prompt_text,
+        model=GEMINI_3_1_FLASH_LITE,
+        chat_history=None,
+        print_cost=True,
+        image_data=None,
+        media_files=None,
+        google_search=False,
+        thinking_level=None,
+        cancel_event: threading.Event | None = None,
+        backend: str | None = None,
+        chat_id: str | None = None
+    ):
+        resolved_backend = (
+            backend
+            if backend is not None
+            else os.environ.get("PROMPT_ROUTER_BACKEND", DEFAULT_BACKEND)
+        ).strip().lower()
+
+        if resolved_backend == "api":
+            return self.api_router.send_prompt(
+                prompt_text=prompt_text,
+                model=model,
+                chat_history=chat_history,
+                print_cost=print_cost,
+                image_data=image_data,
+                media_files=media_files,
+                google_search=google_search,
+                thinking_level=thinking_level,
+                cancel_event=cancel_event,
+            )
+        if resolved_backend == "web":
+            return self.web_router.send_prompt(
+                prompt_text=prompt_text,
+                model=model,
+                chat_history=chat_history,
+                print_cost=print_cost,
+                image_data=image_data,
+                media_files=media_files,
+                thinking_level=thinking_level,
+                cancel_event=cancel_event,
+                chat_id=chat_id,
+                user=USER
+            )
+
+        raise ValueError(
+            f"Unknown prompt router backend {resolved_backend!r}; expected one of: {', '.join(VALID_BACKENDS)}"
+        )
+
+    def close_session(
+        self,
+        chat_history=None,
+        chat_id: str | None = None,
+        delay_seconds: float | None = None,
+    ) -> bool:
+        """Closes any persistent web tab associated with the given conversation."""
+        return self.web_router.close_session(
+            chat_history=chat_history,
+            chat_id=chat_id,
+            delay_seconds=delay_seconds,
+        )
+
+
+_default_router = PromptRouter()
+
+
+def close_session(
+    chat_history=None,
+    chat_id: str | None = None,
+    delay_seconds: float | None = None,
+) -> bool:
+    return _default_router.close_session(
+        chat_history=chat_history,
+        chat_id=chat_id,
+        delay_seconds=delay_seconds,
+    )
 
 
 def send_prompt(
@@ -28,128 +116,21 @@ def send_prompt(
     image_data=None,
     media_files=None,
     google_search=False,
+    thinking_level=None,
     cancel_event: threading.Event | None = None,
+    backend: str | None = None,
+    chat_id: str | None = None,
 ):
-    if cancel_event and cancel_event.is_set():
-        raise InterruptedError("Prompt cancelled before dispatch.")
-
-    if chat_history is None:
-        chat_history = []
-
-    prompt_parts = []
-
-    # Allow passing pre-uploaded files (like screen recording videos)
-    if media_files:
-        prompt_parts.extend(media_files)
-
-    prompt_parts.append(types.Part.from_text(text=prompt_text))
-
-    if isinstance(image_data, list):
-        for label, image_bytes in image_data:
-            prompt_parts.append(types.Part.from_text(text=f"Screenshot of {label}:"))
-            prompt_parts.append(types.Part.from_bytes(data=image_bytes, mime_type="image/png"))
-    elif image_data:
-        prompt_parts.append(types.Part.from_bytes(data=image_data, mime_type="image/png"))
-
-    chat_history.append(types.Content(role="user", parts=prompt_parts))
-
-    delays = [10, 20, 30]
-    response = None
-
-    config: types.GenerateContentConfig | None = None
-    if google_search:
-        config = types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())]
-        )
-
-    for attempt, delay in enumerate(delays, start=1):
-        if cancel_event and cancel_event.is_set():
-            raise InterruptedError("Prompt cancelled.")
-        try:
-            log(f"Calling generate_content with model = {repr(model)}", "debug")
-            response = client.models.generate_content(
-                model=model,
-                contents=chat_history,
-                config=config,
-            )
-            break
-        except APIError as e:
-            if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                log(
-                    f"[Router] 429 RESOURCE_EXHAUSTED encountered on attempt {attempt}/3. Sleeping for {delay}s...",
-                    "warning",
-                )
-                if cancel_event:
-                    if cancel_event.wait(delay):
-                        raise InterruptedError("Prompt cancelled during retry backoff.")
-                else:
-                    time.sleep(delay)
-            else:
-                raise
-    else:
-        if cancel_event and cancel_event.is_set():
-            raise InterruptedError("Prompt cancelled.")
-        try:
-            log(f"Final retry calling generate_content with model = {repr(model)}", "debug")
-            response = client.models.generate_content(
-                model=model,
-                contents=chat_history,
-                config=config,
-            )
-        except APIError as e:
-            if getattr(e, "code", None) == 429 or "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                log("[Router] Exceeded retry attempts (10s, 20s, 30s). Quitting execution.", "error")
-                sys.exit(1)
-            raise
-
-    usage = response.usage_metadata
-    input_tokens = (usage.prompt_token_count or 0) if usage else 0
-    output_tokens = (usage.candidates_token_count or 0) if usage else 0
-    thinking_tokens = (getattr(usage, "thoughts_token_count", 0) or 0) if usage else 0
-
-    model_rates = pricing.get(model, {"input": 0.0, "output": 0.0, "thinking": 0.0})
-    input_cost = (input_tokens / 1e6) * model_rates["input"]
-    output_cost = (output_tokens / 1e6) * model_rates["output"]
-    thinking_cost = (thinking_tokens / 1e6) * model_rates["thinking"]
-    total_cost = input_cost + output_cost + thinking_cost
-
-    cost = {
-        "input_cost": input_cost,
-        "output_cost": output_cost,
-        "thinking_cost": thinking_cost,
-        "total_cost": total_cost,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "thinking_tokens": thinking_tokens,
-        "total_tokens": input_tokens + output_tokens + thinking_tokens,
-    }
-
-    if print_cost:
-        log(f"[Router] Model: {model}", "debug")
-        log(f"[Router] Input tokens: {input_tokens}", "debug")
-        log(f"[Router] Output tokens: {output_tokens}", "debug")
-        log(f"[Router] Thinking tokens: {thinking_tokens}", "debug")
-        log(f"[Router] Total tokens: {input_tokens + output_tokens + thinking_tokens}", "debug")
-        log(f"[Router] Input cost: ${input_cost:.6f}", "debug")
-        log(f"[Router] Output cost: ${output_cost:.6f}", "debug")
-        log(f"[Router] Thinking cost: ${thinking_cost:.6f}", "debug")
-        log(f"[Router] Total cost: ${total_cost:.6f}", "debug")
-        if total_cost > 0.05:
-            log(f"[Router] Cost warning: ${total_cost:.6f} exceeds $0.05 threshold.", "error")
-        elif total_cost > 0.01:
-            log(f"[Router] Cost notice: ${total_cost:.6f} exceeds $0.01 threshold.", "warning")
-
-    if response.text is None:
-        log("[Router] Warning: Received empty response from model.", "warning")
-        response_text = ""
-    else:
-        response_text = response.text
-
-    chat_history.append(
-        types.Content(
-            role="model",
-            parts=[types.Part.from_text(text=response_text)],
-        )
+    return _default_router.send_prompt(
+        prompt_text=prompt_text,
+        model=model,
+        chat_history=chat_history,
+        print_cost=print_cost,
+        image_data=image_data,
+        media_files=media_files,
+        google_search=google_search,
+        thinking_level=thinking_level,
+        cancel_event=cancel_event,
+        backend=backend,
+        chat_id=chat_id,
     )
-
-    return response_text, chat_history, cost

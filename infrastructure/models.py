@@ -21,6 +21,7 @@ GEMINI_NANO_BANANA_2_1 = "gemini-nano-banana-2.1"
 MODELS_CONFIG = {
     "GEMINI_4_ARGON": {
         "model_id": GEMINI_4_ARGON,
+        "aistudio_name": "gemini-4-argon",
         "pricing": {
             "input": 2,
             "output": 10,
@@ -44,6 +45,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_4_CARBON": {
         "model_id": GEMINI_4_CARBON,
+        "aistudio_name": "gemini-4-carbon",
         "pricing": {
             "input": 2,
             "output": 10,
@@ -67,6 +69,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_4_HYDROGEN": {
         "model_id": GEMINI_4_HYDROGEN,
+        "aistudio_name": "gemini-4-hydrogen",
         "pricing": {
             "input": 1.5,
             "output": 7.5,
@@ -76,6 +79,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_8_FLASH": {
         "model_id": GEMINI_3_8_FLASH,
+        "aistudio_name": "gemini-3.8-flash",
         "pricing": {
             "input": 0.75,
             "output": 3.75,
@@ -99,6 +103,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_7_FLASH": {
         "model_id": GEMINI_3_7_FLASH,
+        "aistudio_name": "gemini-3.7-flash",
         "pricing": {
             "input": 0.75,
             "output": 3.75,
@@ -122,6 +127,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_6_FLASH": {
         "model_id": GEMINI_3_6_FLASH,
+        "aistudio_name": "gemini-3.6-flash",
         "pricing": {
             "input": 0.75,
             "output": 3.75,
@@ -145,6 +151,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_5_FLASH": {
         "model_id": GEMINI_3_5_FLASH,
+        "aistudio_name": "gemini-3.5-flash",
         "pricing": {
             "input": 1.5,
             "output": 9,
@@ -154,6 +161,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_5_FLASH_LITE": {
         "model_id": GEMINI_3_5_FLASH_LITE,
+        "aistudio_name": "gemini-3.5-flash-lite",
         "pricing": {
             "input": 0.3,
             "output": 2.5,
@@ -163,6 +171,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_5_TRANSCRIBE": {
         "model_id": GEMINI_3_5_TRANSCRIBE,
+        "aistudio_name": "gemini-3.5-transcribe",
         "pricing": {
             "input": 2,
             "output": 12,
@@ -172,6 +181,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_1_PRO": {
         "model_id": GEMINI_3_1_PRO,
+        "aistudio_name": "gemini-3.1-pro-preview",
         "pricing": {
             "input": 2,
             "output": 12,
@@ -181,6 +191,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_1_FLASH_LITE": {
         "model_id": GEMINI_3_1_FLASH_LITE,
+        "aistudio_name": "gemini-3.1-flash-lite",
         "pricing": {
             "input": 0.25,
             "output": 1.5,
@@ -190,6 +201,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_1_FLASH_IMAGE": {
         "model_id": GEMINI_3_1_FLASH_IMAGE,
+        "aistudio_name": "gemini-3.1-flash-image",
         "pricing": {
             "input": 0.5,
             "output": 3,
@@ -200,6 +212,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_1_FLASH_LITE_IMAGE": {
         "model_id": GEMINI_3_1_FLASH_LITE_IMAGE,
+        "aistudio_name": "gemini-3.1-flash-lite-image",
         "pricing": {
             "input": 0.25,
             "output": 1.5,
@@ -210,6 +223,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_FLASH_PREVIEW": {
         "model_id": GEMINI_3_FLASH_PREVIEW,
+        "aistudio_name": "gemini-3-flash-preview",
         "pricing": {
             "input": 0.5,
             "output": 3,
@@ -219,6 +233,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_3_PRO_IMAGE": {
         "model_id": GEMINI_3_PRO_IMAGE,
+        "aistudio_name": "gemini-3-pro-image",
         "pricing": {
             "input": 2,
             "output": 12,
@@ -229,6 +244,7 @@ MODELS_CONFIG = {
     },
     "GEMINI_NANO_BANANA_2_1": {
         "model_id": GEMINI_NANO_BANANA_2_1,
+        "aistudio_name": "gemini-nano-banana-2.1",
         "pricing": {
             "input": 1.5,
             "output": 30,
@@ -237,6 +253,16 @@ MODELS_CONFIG = {
         "discount_schedule": None,
     },
 }
+
+
+def get_aistudio_name(model: str) -> str:
+    """Resolves a model ID or MODELS_CONFIG key to its AI Studio URL model identifier."""
+    if model in MODELS_CONFIG:
+        return MODELS_CONFIG[model].get("aistudio_name", MODELS_CONFIG[model]["model_id"])
+    for info in MODELS_CONFIG.values():
+        if info["model_id"] == model:
+            return info.get("aistudio_name", model)
+    return model
 
 
 def get_resolved_pricing() -> dict[str, dict]:

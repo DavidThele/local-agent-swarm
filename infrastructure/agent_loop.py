@@ -1,4 +1,5 @@
 import importlib
+import inspect
 import json
 import os
 import queue
@@ -15,7 +16,7 @@ from infrastructure.concurrency import (
     unregister_agent,
 )
 from infrastructure.logging import log
-from infrastructure.prompt_router import send_prompt
+from infrastructure.prompt_router import close_session, send_prompt
 from infrastructure.parser import parse_llm_output
 from infrastructure.agent_types import AgentType
 
@@ -169,6 +170,7 @@ def _send_prompt_with_guards(
     google_search: bool,
     cancel_event: threading.Event,
     remaining_thinking_seconds: float | None,
+    thinking_level: str | None = None,
 ) -> tuple[str, list, dict | float, float]:
     """
     Runs send_prompt in a daemon thread so active LLM thinking can be interrupted
@@ -186,13 +188,26 @@ def _send_prompt_with_guards(
 
     def _target():
         try:
-            result_box["value"] = send_prompt(
-                prompt_text=prompt_text,
-                model=model,
-                chat_history=chat_history,
-                google_search=google_search,
-                cancel_event=call_cancel_event,
-            )
+            kwargs = {
+                "prompt_text": prompt_text,
+                "model": model,
+                "chat_history": chat_history,
+                "google_search": google_search,
+                "cancel_event": call_cancel_event,
+            }
+            if thinking_level is not None:
+                callable_target = getattr(send_prompt, "side_effect", None)
+                if not callable(callable_target):
+                    callable_target = send_prompt
+                try:
+                    sig = inspect.signature(callable_target)
+                    if "thinking_level" in sig.parameters or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                    ):
+                        kwargs["thinking_level"] = thinking_level
+                except (TypeError, ValueError):
+                    kwargs["thinking_level"] = thinking_level
+            result_box["value"] = send_prompt(**kwargs)
         except BaseException as exc:
             result_box["error"] = exc
         finally:
@@ -424,6 +439,7 @@ def run_agent(
             )
 
         model_to_use = agent_type.model
+        thinking_level_to_use = agent_type.thinking_level
 
         # -------------------------------------------------------------------------
         # RESUME HISTORY LOGIC
@@ -499,6 +515,7 @@ def run_agent(
                 google_search=True,
                 cancel_event=cancel_event,
                 remaining_thinking_seconds=remaining_thinking,
+                thinking_level=thinking_level_to_use,
             )
             thinking_time_used += turn_thinking_sec
 
@@ -703,4 +720,8 @@ def run_agent(
             current_iter,
         )
     finally:
+        try:
+            close_session(chat_history=chat_history)
+        except Exception as exc:
+            log(f"[Swarm] Failed to close web session tab for {agent_id}: {exc}", "debug")
         unregister_agent(agent_id)
