@@ -23,15 +23,15 @@ from playwright.async_api import (
 
 from infrastructure.logging import log
 from infrastructure.models import GEMINI_4_HYDROGEN, get_aistudio_name
-
-CHROME_APP_PATH = "/Applications/Google Chrome.app"
-CHROME_BINARY = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-DEFAULT_PROFILE_DIR = os.environ.get(
-    "AISTUDIO_CHROME_PROFILE", "/Users/davidthele/.agent-browser-profile"
+from runtime import (
+    AISTUDIO_CDP_HOST as DEFAULT_CDP_HOST,
+    AISTUDIO_CDP_PORT as DEFAULT_CDP_PORT,
+    AISTUDIO_CHROME_PROFILE as DEFAULT_PROFILE_DIR,
+    AISTUDIO_CLOSE_DELAY_SECONDS as DEFAULT_CLOSE_DELAY_SECONDS,
+    CHROME_APP_PATH,
+    CHROME_BINARY,
+    WEB_ROUTER_RESPONSE_TIMEOUT_SECONDS,
 )
-DEFAULT_CDP_PORT = int(os.environ.get("AISTUDIO_CDP_PORT", "9223"))
-DEFAULT_CDP_HOST = "localhost"
-DEFAULT_CLOSE_DELAY_SECONDS = float(os.environ.get("AISTUDIO_CLOSE_DELAY_SECONDS", "8.0"))
 
 # Sets textarea value directly via the native setter and fires Angular input/change
 # events without waiting on requestAnimationFrame (which Chrome pauses in background tabs).
@@ -218,7 +218,7 @@ class WebPromptRouter:
         self,
         profile_dir: str = DEFAULT_PROFILE_DIR,
         cdp_port: int = DEFAULT_CDP_PORT,
-        response_timeout_seconds: float = 600.0,
+        response_timeout_seconds: float = WEB_ROUTER_RESPONSE_TIMEOUT_SECONDS,
     ):
         self.profile_dir = os.path.expanduser(profile_dir)
         self.cdp_port = cdp_port

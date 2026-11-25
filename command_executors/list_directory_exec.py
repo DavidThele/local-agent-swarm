@@ -4,8 +4,7 @@ from infrastructure.workspace import (
     is_within_workspace,
     resolve_workspace_path,
 )
-
-LARGE_FILE_THRESHOLD_BYTES = 3 * 1024 * 1024  # 3 MB
+from runtime import LARGE_FILE_THRESHOLD_BYTES
 
 
 def _format_size(num_bytes: int) -> str:

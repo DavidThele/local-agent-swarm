@@ -7,7 +7,7 @@ from infrastructure.logging import log
 # Leaf tags that frequently contain raw code, shell operators (&&, <, >), or nested example tags
 RAW_TEXT_TAGS = (
     "Content", "Summary", "Command", "Instructions",
-    "Search", "Replace",
+    "Search", "Replace", "OldStr", "NewStr", "Pattern", "BackupFilename",
     "Context", "DoD", "Result", "Query", "Text", "New", "Existing",
     "Bottlenecks", "Recommendations", "EfficiencyScore",
     "Findings", "Proposals", "Decisions", "Rationale",

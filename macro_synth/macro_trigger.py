@@ -2,18 +2,30 @@
 
 import os
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv() 
+load_dotenv()
+
+from runtime import SOCKET_PATH
 
 
-SOCKET_PATH = Path(
-    os.environ.get(
-        "MACRO_SERVICE_SOCKET",
-        str(Path(os.environ.get("TMPDIR", "/tmp")) / "agents-macro-synth.sock"),
+def _notify_service_not_running() -> None:
+    if sys.platform != "darwin":
+        return
+    script = (
+        'display notification "Resident HUD service (MacroService) is not started." '
+        'with title "Resident HUD Service Not Running"'
     )
-)
+    try:
+        subprocess.Popen(
+            ["osascript", "-e", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
 
 
 def trigger_service() -> str:
@@ -28,5 +40,6 @@ if __name__ == "__main__":
     try:
         print(trigger_service())
     except OSError as exc:
+        _notify_service_not_running()
         print(f"Macro service unavailable: {exc}", file=sys.stderr)
         raise SystemExit(1)

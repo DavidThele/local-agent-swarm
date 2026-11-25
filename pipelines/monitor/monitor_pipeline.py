@@ -5,6 +5,7 @@ from datetime import datetime
 from Foundation import NSRunLoop, NSDate
 
 from pipelines.monitor.config import BLOCKLIST, DATA_DIR, INTERVAL_SECONDS
+from runtime import REDACTOR_BUFFER_CHARS
 from input_monitor import start_listeners, stop_listeners, get_and_clear_events, clear_events
 from ui_context import get_active_context, compact_dom
 from redactor import SecretRedactor
@@ -34,7 +35,7 @@ def main():
 
     last_app_name = None
     last_ui_tree_str = None
-    redactor = SecretRedactor(buffer_chars=60)
+    redactor = SecretRedactor(buffer_chars=REDACTOR_BUFFER_CHARS)
     
     # Track blocking state so we don't spam the console
     is_currently_blocked = False

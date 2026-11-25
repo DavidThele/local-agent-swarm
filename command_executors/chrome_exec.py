@@ -14,6 +14,12 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 from infrastructure.logging import log
+from runtime import (
+    CHROME_BINARY,
+    CHROME_EXEC_CDP_PORT,
+    CHROME_EXEC_LAUNCH_MAX_ATTEMPTS,
+    CHROME_EXEC_PROFILE_DIR,
+)
 
 # Global state to persist the browser connection across agent turns
 _PLAYWRIGHT: Playwright | None = None
@@ -65,7 +71,7 @@ DOM_SCRIPT = """
 
 def launch_chrome_if_needed():
     """Checks if the debug port is open. If not, spawns Chrome and waits for it to load."""
-    port = 9222
+    port = CHROME_EXEC_CDP_PORT
     url = f"http://localhost:{port}/json/version"
     
     # Check if Chrome is already listening
@@ -76,8 +82,8 @@ def launch_chrome_if_needed():
         pass
         
     log("[Chrome] Starting new Chrome instance with agent profile...", "info")
-    chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-    profile_dir = os.path.expanduser("~/.agents/chrome_profile")
+    chrome_path = CHROME_BINARY
+    profile_dir = str(CHROME_EXEC_PROFILE_DIR.expanduser())
     os.makedirs(profile_dir, exist_ok=True)
     
     cmd = [
@@ -96,7 +102,7 @@ def launch_chrome_if_needed():
     )
     
     # Poll until the debugger endpoint is responsive
-    max_attempts = 20
+    max_attempts = CHROME_EXEC_LAUNCH_MAX_ATTEMPTS
     for _ in range(max_attempts):
         try:
             urllib.request.urlopen(url, timeout=1)
@@ -106,7 +112,7 @@ def launch_chrome_if_needed():
         except urllib.error.URLError:
             time.sleep(0.5)
             
-    raise RuntimeError("Timed out waiting for Chrome to open debugging port 9222.")
+    raise RuntimeError(f"Timed out waiting for Chrome to open debugging port {port}.")
 
 def init_browser() -> Page:
     global _PLAYWRIGHT, _BROWSER, _CONTEXT, _PAGE
@@ -118,7 +124,7 @@ def init_browser() -> Page:
     log("[Chrome] Connecting to Chrome via CDP...", "info")
     try:
         _PLAYWRIGHT = sync_playwright().start()
-        _BROWSER = _PLAYWRIGHT.chromium.connect_over_cdp("http://localhost:9222")
+        _BROWSER = _PLAYWRIGHT.chromium.connect_over_cdp(f"http://localhost:{CHROME_EXEC_CDP_PORT}")
         _CONTEXT = _BROWSER.contexts[0] if _BROWSER.contexts else _BROWSER.new_context()
         _PAGE = _CONTEXT.pages[0] if _CONTEXT.pages else _CONTEXT.new_page()
         return _PAGE
@@ -226,8 +232,10 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
         
         # Save screenshot
         chat_dir = Path(context_state.get("local_chat_dir", ".agents/chats/default"))
+        chat_dir.mkdir(parents=True, exist_ok=True)
         screenshot_path = chat_dir / f"chrome_{int(time.time())}.png"
         page.screenshot(path=str(screenshot_path))
+        context_state["last_chrome_screenshot"] = str(screenshot_path)
         
         return f"[Success] {result_msg}\n\n=== INTERACTIVE DOM ELEMENTS ===\n{dom_string}\n"
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from infrastructure.logging import log
 from command_executors import zsh_exec
 from . import input_events
-from .runtime import ACTION_BUFFER_TIME_MS, abort_event
+from runtime import ACTION_BUFFER_TIME_MS, abort_event
 
 
 def _create_action_logger():

@@ -24,7 +24,7 @@ from AppKit import (
 
 from infrastructure.logging import log
 from infrastructure.scrubber import scrub_text
-from .runtime import (
+from runtime import (
     DATA_DIR,
     DEEP_DOM_MAX_DEPTH,
     DEEP_DOM_MAX_VALUE_LEN,

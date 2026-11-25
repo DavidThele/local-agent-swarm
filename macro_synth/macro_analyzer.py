@@ -7,10 +7,9 @@ from google.genai import types
 from infrastructure.logging import log
 from infrastructure.parser import parse_llm_output
 from infrastructure.prompt_router import send_prompt
-from infrastructure.models import GEMINI_3_8_FLASH
 from pipelines.performance_analyzer import snapshot_prompt_history
 
-from .runtime import LOGS_DIR, GLOBAL_ROOT, REPO_ROOT
+from runtime import GLOBAL_ROOT, LOGS_DIR, MACRO_ANALYZER_MODEL, REPO_ROOT
 
 def load_macro_analyzer_prompt() -> str:
     global_path = GLOBAL_ROOT / "prompts" / "macro_analyzer_instructions.md"
@@ -64,7 +63,7 @@ def analyze_macro(prompt_file: Path, xml_output_file: Path, video_file: Path, fe
     
     result_text, _, _ = send_prompt(
         prompt_text=full_prompt,
-        model=GEMINI_3_8_FLASH,
+        model=MACRO_ANALYZER_MODEL,
         media_files=media_files,
         print_cost=True
     )

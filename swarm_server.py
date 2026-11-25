@@ -35,8 +35,8 @@ from infrastructure.concurrency import (
 from infrastructure.logging import log
 from infrastructure.workspace import create_chat_instance, init_global_workspace
 from pipelines.swarm_analyzer import analyze_session
+from runtime import DB_DIR, GLOBAL_ROOT, REPO_ROOT, SHUTDOWN_TIMEOUT_SECONDS
 
-REPO_ROOT = Path(__file__).resolve().parent
 UI_DIST_DIR = REPO_ROOT / "swarm-widget-ui" / "dist"
 
 app = FastAPI(title="Local Agent Swarm Bridge")
@@ -72,7 +72,7 @@ async def broadcast_event(message: dict[str, Any]) -> None:
                 _WS_CLIENTS.discard(ws)
 
 
-def shutdown_runtime(timeout: float = 4.0) -> None:
+def shutdown_runtime(timeout: float = SHUTDOWN_TIMEOUT_SECONDS) -> None:
     """
     Cancels all active agents, terminates running child subprocess groups,
     joins active swarm threads, and tears down Playwright/browser routers.
@@ -138,7 +138,7 @@ async def on_shutdown() -> None:
 # ============================================================================
 def _check_chroma_status() -> str:
     try:
-        db_dir = Path(os.environ.get("AGENTS_DB_DIR", str(Path.home() / ".agents" / "db"))).expanduser()
+        db_dir = Path(os.environ.get("AGENTS_DB_DIR", str(DB_DIR))).expanduser()
         return "Connected" if db_dir.exists() else "Offline"
     except Exception:
         return "Offline"
@@ -164,7 +164,7 @@ def _map_agent_type_to_ui(raw_type: str) -> str:
 
 
 def _find_chat_dir(chat_id: str) -> Path | None:
-    global_candidate = Path.home() / ".agents" / "chats" / chat_id
+    global_candidate = GLOBAL_ROOT / "chats" / chat_id
     if global_candidate.exists():
         return global_candidate.resolve()
     local_candidate = _ACTIVE_WORKSPACE / ".agents" / "chats" / chat_id

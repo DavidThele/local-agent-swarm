@@ -6,7 +6,7 @@ import Quartz
 from AppKit import NSEvent
 
 from infrastructure.logging import log
-from .runtime import (
+from runtime import (
     KEY_COMBO_DOWN_TIME_MS,
     KEY_COMBO_UP_TIME_MS,
     KEY_PRESS_DOWN_TIME_MS,
@@ -23,7 +23,7 @@ from .runtime import (
     global_event_monitor,
     kill_switch_stop_event,
 )
-import macro_synth.runtime as runtime
+import runtime
 
 KEYCODE_MAP = {
     "a": 0x00, "s": 0x01, "d": 0x02, "f": 0x03, "h": 0x04, "g": 0x05, "z": 0x06, "x": 0x07,

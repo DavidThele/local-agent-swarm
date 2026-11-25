@@ -4,10 +4,13 @@ import uuid
 from pathlib import Path
 from typing import List, Dict, Any
 from infrastructure.logging import log
+from runtime import DB_COLLECTION_NAME, DB_DIR, DEFAULT_SEARCH_DB_RESULTS
 
 def get_db_path(global_dir: str = "~/.agents") -> Path:
-    if global_dir == "~/.agents" and os.environ.get("AGENTS_DB_DIR"):
-        return Path(os.environ["AGENTS_DB_DIR"]).expanduser()
+    if global_dir == "~/.agents":
+        if os.environ.get("AGENTS_DB_DIR"):
+            return Path(os.environ["AGENTS_DB_DIR"]).expanduser()
+        return DB_DIR
     return Path(global_dir).expanduser() / "db"
 
 def get_db_client(global_dir: str = "~/.agents"):
@@ -17,7 +20,7 @@ def get_db_client(global_dir: str = "~/.agents"):
     
     client = chromadb.PersistentClient(path=str(db_path))
     # We use a default collection for the semantic memory
-    collection = client.get_or_create_collection(name="semantic_memory")
+    collection = client.get_or_create_collection(name=DB_COLLECTION_NAME)
     return collection
 
 def add_chunk(text: str, metadata: Dict[str, Any] | None = None) -> str:
@@ -46,7 +49,7 @@ def clear():
     log("[DbManager] DB cleared.", "success")
 
     
-def search_similar_chunks(query_text: str, n_results: int = 5) -> List[Dict[str, Any]]:
+def search_similar_chunks(query_text: str, n_results: int = DEFAULT_SEARCH_DB_RESULTS) -> List[Dict[str, Any]]:
     """Searches for chunks semantically similar to the query."""
     collection = get_db_client()
     

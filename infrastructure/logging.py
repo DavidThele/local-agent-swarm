@@ -16,10 +16,9 @@ COLORS = {
     "reset": "\033[0m",
 }
 
+from runtime import LOGS_DIR
+
 _LABEL_PATTERN = re.compile(r"(?P<leading>\s*)(?P<label>\[[^\]\n]+\])(?P<message>.*)", re.DOTALL)
-LOGS_DIR = Path(
-    os.environ.get("AGENTS_LOG_ROOT", str(Path(__file__).resolve().parents[1] / "logs"))
-).expanduser()
 DEBUG_LOG_PATH = LOGS_DIR / "debug_log.log"
 _DEBUG_LOG_LOCK = threading.Lock()
 
@@ -45,4 +44,4 @@ def log(message: object, color: str = "info") -> None:
         except OSError:
             pass
 
-    # print(output)
+    print(output)

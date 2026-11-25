@@ -12,9 +12,10 @@ from infrastructure.concurrency import (
     unregister_subprocess,
 )
 
-# Hardcoded baseline shell injection vectors (newlines, carriage returns, subshells)
-# that are ALWAYS checked alongside the user's config/cmd_blacklist.md
-BASELINE_BLACKLIST = {"|", ">", "<", "&", ";", "`", "$(", "${", "\n", "\r"}
+from runtime import (
+    BASELINE_ZSH_BLACKLIST as BASELINE_BLACKLIST,
+    DEFAULT_ZSH_TIMEOUT_SECONDS,
+)
 
 def load_security_list(filepath: Path) -> set:
     """
@@ -53,7 +54,7 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
     else:
         cmd_string = str(content).strip()
     try:
-        timeout = int(attributes.get("timeout", 30))
+        timeout = int(attributes.get("timeout", DEFAULT_ZSH_TIMEOUT_SECONDS))
     except (TypeError, ValueError):
         return "[Error] Zsh timeout must be an integer."
     if timeout <= 0:
@@ -84,11 +85,23 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
 
     # Check Greylist (Command not explicitly whitelisted)
     elif base_cmd not in WHITELIST:
+        from infrastructure import hud_client
+
+        prompt_text = f"Command '{base_cmd}' is not in cmd_whitelist.md. Approve execution?"
         if ui_bridge.is_ui_active():
             res = ui_bridge.request_hitl(
                 agent_id=context_state.get("worker_id", "worker"),
                 blocker_type="Security",
-                prompt_text=f"Command '{base_cmd}' is not in cmd_whitelist.md. Approve execution?",
+                prompt_text=prompt_text,
+                command_preview=cmd_string,
+            )
+            if res.get("action") != "approve":
+                return "[System] Command execution denied by user."
+        elif not hud_client.is_hud_modal_disabled():
+            res = hud_client.request_hitl_modal(
+                agent_id=context_state.get("worker_id", "worker"),
+                blocker_type="Security",
+                prompt_text=prompt_text,
                 command_preview=cmd_string,
             )
             if res.get("action") != "approve":

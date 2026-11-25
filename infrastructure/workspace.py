@@ -2,21 +2,7 @@ import re
 import uuid
 from pathlib import Path
 from infrastructure.logging import log
-
-IGNORED_DIRS: frozenset[str] = frozenset({
-    ".git",
-    "node_modules",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".backups",
-    ".pytest_cache",
-    "dist",
-    "build",
-    ".next",
-    "chrome_profile",
-    ".DS_Store",
-})
+from runtime import GLOBAL_ROOT, IGNORED_DIRS
 
 def resolve_workspace_path(path: str, workspace_root: str | Path | None = None) -> tuple[Path, Path]:
     root = Path(workspace_root or Path.cwd()).expanduser().resolve()
@@ -37,14 +23,25 @@ def request_file_access(
     diff_provider=None,
     agent_id: str = "worker",
 ) -> bool:
-    from infrastructure import ui_bridge
+    from infrastructure import hud_client, ui_bridge
+
+    diff_preview = diff_provider() if diff_provider is not None else str(path)
+    prompt_text = f"{operation.upper()} request outside authorized workspace: {path}"
 
     if ui_bridge.is_ui_active():
-        diff_preview = diff_provider() if diff_provider is not None else str(path)
         res = ui_bridge.request_hitl(
             agent_id=agent_id,
             blocker_type="Security",
-            prompt_text=f"{operation.upper()} request outside authorized workspace: {path}",
+            prompt_text=prompt_text,
+            command_preview=diff_preview[:1200],
+        )
+        return res.get("action") == "approve"
+
+    if not hud_client.is_hud_modal_disabled():
+        res = hud_client.request_hitl_modal(
+            agent_id=agent_id,
+            blocker_type="Security",
+            prompt_text=prompt_text,
             command_preview=diff_preview[:1200],
         )
         return res.get("action") == "approve"
@@ -80,7 +77,7 @@ def init_global_workspace() -> Path:
     Initializes the global workspace in the user's home directory (~/.agents).
     Creates necessary directories and the global AGENTS.md template.
     """
-    global_root = Path.home() / ".agents"
+    global_root = GLOBAL_ROOT
     
     # Define the global directory structure
     dirs_to_create = [

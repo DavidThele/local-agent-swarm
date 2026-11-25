@@ -1,5 +1,6 @@
-from infrastructure import ui_bridge
+from infrastructure import hud_client, ui_bridge
 from infrastructure.concurrency import TERMINAL_LOCK
+
 
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
     if isinstance(content, dict):
@@ -7,6 +8,8 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         raw_options = content.get("Options", {})
         if isinstance(raw_options, dict):
             options = raw_options.get("Option", [])
+        elif isinstance(raw_options, list):
+            options = raw_options
         else:
             options = []
     else:
@@ -19,7 +22,7 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         options = []
 
     agent_id = context_state.get("worker_id", "main")
-    clean_base = [opt for opt in options if str(opt).strip().lower() != "other"]
+    clean_base = [str(opt) for opt in options if str(opt).strip() and str(opt).strip().lower() != "other"]
 
     if ui_bridge.is_ui_active():
         res = ui_bridge.request_hitl(
@@ -28,6 +31,19 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
             prompt_text=text,
             options=clean_base,
         )
+        if res.get("action") == "cancel":
+            return "[User Dismissed] The user dismissed the question without answering."
+        return f"[User Reply] {res.get('value', '')}"
+
+    if not hud_client.is_hud_modal_disabled():
+        res = hud_client.request_hitl_modal(
+            agent_id=agent_id,
+            blocker_type="Question",
+            prompt_text=text,
+            options=clean_base,
+        )
+        if res.get("action") == "cancel":
+            return "[User Dismissed] The user dismissed the question without answering."
         return f"[User Reply] {res.get('value', '')}"
 
     clean_options = list(clean_base) + ["Other (type custom response)"]
@@ -36,12 +52,12 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         print(f"\n[Agent Question from {agent_id}] {text}")
         for i, opt in enumerate(clean_options, 1):
             print(f"  {i}. {opt}")
-            
+
         user_response = input("Select an option number or type your answer: ").strip()
-        
+
         if user_response == str(len(clean_options)):
             user_response = input("Enter your custom answer: ").strip()
         elif user_response.isdigit() and 1 <= int(user_response) < len(clean_options):
             user_response = clean_options[int(user_response) - 1]
-            
+
     return f"[User Reply] {user_response}"

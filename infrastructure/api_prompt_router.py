@@ -11,13 +11,14 @@ from infrastructure.models import (  # noqa: F401 - re-exported for callers impo
     GEMINI_3_1_FLASH_LITE,
     get_resolved_pricing,
 )
+from runtime import API_RATE_LIMIT_RETRY_DELAYS, VERTEX_AI_LOCATION
 
 # Resolve active pricing table at import time
 pricing = get_resolved_pricing()
 
 project = os.environ.get("GOOGLE_CLOUD_PROJECT")
 
-client = genai.Client(vertexai=True, project=project, location="global")
+client = genai.Client(vertexai=True, project=project, location=VERTEX_AI_LOCATION)
 
 
 class ApiPromptRouter:
@@ -62,7 +63,7 @@ class ApiPromptRouter:
 
         chat_history.append(types.Content(role="user", parts=prompt_parts))
 
-        delays = [10, 20, 30]
+        delays = list(API_RATE_LIMIT_RETRY_DELAYS)
         response = None
 
         config_kwargs: dict = {}

@@ -8,15 +8,14 @@ from infrastructure.scrubber import scrub_text
 from pipelines.ingestor_pipeline import process_telemetry
 from infrastructure.logging import log
 from datetime import date, datetime
+from runtime import (
+    DATA_DIR as LOG_DIR,
+    DB_DIR,
+    LOG_LINES_PER_CHUNK as LINES_PER_CHUNK,
+)
 
 # Core Paths
-LOG_DIR = Path(
-    os.environ.get("AGENTS_LOG_DIR", str(Path.home() / ".agents" / "logs" / "moniter_data"))
-).expanduser()
-STATE_FILE = Path(
-    os.environ.get("AGENTS_DB_DIR", str(Path.home() / ".agents" / "db"))
-).expanduser() / "ingestion_state.json"
-LINES_PER_CHUNK = 200
+STATE_FILE = DB_DIR / "ingestion_state.json"
 BACKUP_DIR = STATE_FILE.parent / "backups"
 
 

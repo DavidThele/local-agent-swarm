@@ -2,9 +2,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from infrastructure.logging import log
-
-GLOBAL_ROOT = Path.home() / ".agents"
-HISTORY_DIR = GLOBAL_ROOT / "prompts" / "agents_prompt_history"
+from runtime import GLOBAL_ROOT, PROMPT_HISTORY_DIR as HISTORY_DIR
 
 def snapshot_prompt_history(current_content: str, summary_msg: str, prefix: str = "agents"):
     """

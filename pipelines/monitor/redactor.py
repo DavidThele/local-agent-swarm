@@ -1,8 +1,10 @@
 import re
 import collections
 
+from runtime import REDACTOR_BUFFER_CHARS
+
 class SecretRedactor:
-    def __init__(self, buffer_chars=60):
+    def __init__(self, buffer_chars=REDACTOR_BUFFER_CHARS):
         self.buffer_chars = buffer_chars
         self.cycles = collections.deque()
         self.patterns = [

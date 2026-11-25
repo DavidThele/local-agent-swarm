@@ -8,14 +8,13 @@ from infrastructure.api_prompt_router import (  # noqa: F401 - re-exported for b
 )
 from infrastructure.models import GEMINI_3_1_FLASH_LITE  # noqa: F401
 from infrastructure.web_prompt_router import WebPromptRouter
-
-DEFAULT_BACKEND = "api"
-VALID_BACKENDS = ("api", "web")
-USERS = {
-    "subscribed": 0,
-    "personal": 1,
-}
-USER = 0
+from runtime import (
+    DEFAULT_PROMPT_ROUTER_BACKEND as DEFAULT_BACKEND,
+    DEFAULT_WEB_USER_INDEX as USER,
+    SHUTDOWN_TIMEOUT_SECONDS,
+    VALID_PROMPT_ROUTER_BACKENDS as VALID_BACKENDS,
+    WEB_ROUTER_USERS as USERS,
+)
 
 
 class PromptRouter:
@@ -92,7 +91,7 @@ class PromptRouter:
             delay_seconds=delay_seconds,
         )
 
-    def shutdown(self, timeout: float = 4.0) -> None:
+    def shutdown(self, timeout: float = SHUTDOWN_TIMEOUT_SECONDS) -> None:
         """Cleanly shuts down background router resources (e.g., WebPromptRouter event loop)."""
         self.web_router.shutdown(timeout=timeout)
 
@@ -100,7 +99,7 @@ class PromptRouter:
 _default_router = PromptRouter()
 
 
-def shutdown(timeout: float = 4.0) -> None:
+def shutdown(timeout: float = SHUTDOWN_TIMEOUT_SECONDS) -> None:
     _default_router.shutdown(timeout=timeout)
 
 

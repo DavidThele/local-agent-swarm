@@ -7,6 +7,7 @@ from infrastructure.agent_loop import run_agent
 from infrastructure.agent_types import AgentType
 from infrastructure.logging import log
 from pipelines.swarm_analyzer import analyze_session
+from runtime import CLI_MENU_VIEWPORT_HEIGHT, GLOBAL_ROOT
 
 def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool | None = None) -> dict:
     """
@@ -60,7 +61,7 @@ def start_swarm_session(user_prompt: str, chat_id: str = "", run_optimizer: bool
 
 def get_past_chats() -> list[str]:
     """Scans the agents workspace for historical chat folders."""
-    base_dir = Path.home() / ".agents" / "chats"
+    base_dir = GLOBAL_ROOT / "chats"
     if not base_dir.exists():
         base_dir = Path.cwd() / ".agents" / "chats"
         
@@ -111,7 +112,7 @@ def interactive_menu(options: list[str]) -> str:
 
     selected = 0
     viewport_start = 0
-    viewport_height = 12 # Keeps 10 chats visible + new chat + separator
+    viewport_height = CLI_MENU_VIEWPORT_HEIGHT # Keeps 10 chats visible + new chat + separator
 
     sys.stdout.write('\033[?25l') # Hide cursor during menu
     try:

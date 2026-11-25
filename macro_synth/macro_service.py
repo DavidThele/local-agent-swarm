@@ -24,7 +24,7 @@ from . import input_events
 from .action_runner import execute_macro_commands
 # Note: Use .hud_layout (or .hud_overlay if you named the file hud_overlay.py)
 from .hud.hud_layout import MacroHUD
-from .runtime import (
+from runtime import (
     GLOBAL_ROOT,
     LOGS_DIR,
     MODEL_TO_USE,
@@ -188,13 +188,27 @@ def run_macro_once(hud: MacroHUD):
             subprocess.Popen(cmd)
 
 
+import json
+import queue
+
+from .hud.hitl_modal import HitlModalHUD
+
+
 class MacroService:
-    def __init__(self, hud: MacroHUD):
+    def __init__(self, hud: MacroHUD, hitl_modal: HitlModalHUD | None = None):
         self.hud = hud
+        self.hitl_modal = hitl_modal
         self.run_lock = threading.Lock()
         self.worker = None
         self.stop_event = threading.Event()
         self.server_thread = None
+
+        # FIFO queue for interactive HITL modals (one shown at a time;
+        # batched responses flushed once the current burst queue drains)
+        self._modal_queue: queue.Queue[tuple[socket.socket, dict]] = queue.Queue()
+        self._cancelled_lock = threading.Lock()
+        self._cancelled_blockers: set[str] = set()
+        self._modal_worker_thread: threading.Thread | None = None
 
     def start(self):
         SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -202,22 +216,116 @@ class MacroService:
             SOCKET_PATH.unlink()
         except FileNotFoundError:
             pass
+        if self.hitl_modal is not None:
+            self._modal_worker_thread = threading.Thread(
+                target=self._modal_worker, daemon=True
+            )
+            self._modal_worker_thread.start()
         self.server_thread = threading.Thread(target=self._serve, daemon=True)
         self.server_thread.start()
         log(f"[MacroSynth] Resident service listening on {SOCKET_PATH}.", "success")
 
+    @staticmethod
+    def _send_json_and_close(conn: socket.socket, payload: dict) -> None:
+        try:
+            conn.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        except OSError:
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _modal_worker(self):
+        """Processes queued HITL modals strictly one at a time, flushing batch answers once queue drains."""
+        pending_replies: list[tuple[socket.socket, dict]] = []
+        while not self.stop_event.is_set():
+            try:
+                conn, payload = self._modal_queue.get(timeout=0.25)
+            except queue.Empty:
+                if pending_replies:
+                    for reply_conn, reply_data in pending_replies:
+                        self._send_json_and_close(reply_conn, reply_data)
+                    pending_replies.clear()
+                continue
+
+            blocker_id = str(payload.get("blocker_id") or "")
+            with self._cancelled_lock:
+                already_cancelled = blocker_id in self._cancelled_blockers
+                if already_cancelled:
+                    self._cancelled_blockers.discard(blocker_id)
+
+            if already_cancelled or self.hitl_modal is None:
+                self._send_json_and_close(conn, {"action": "cancelled_externally", "value": ""})
+            else:
+                result = self.hitl_modal.prompt_sync(payload)
+                if result.get("action") == "cancelled_externally":
+                    self._send_json_and_close(conn, result)
+                else:
+                    pending_replies.append((conn, result))
+
+            # Once no more modals are queued, release all collected answers together
+            if self._modal_queue.empty() and pending_replies:
+                for reply_conn, reply_data in pending_replies:
+                    self._send_json_and_close(reply_conn, reply_data)
+                pending_replies.clear()
+
+    def _read_line(self, conn: socket.socket) -> str:
+        conn.settimeout(2.0)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = conn.recv(4096)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if b"\n" in chunk:
+                break
+        return b"".join(chunks).decode("utf-8", errors="replace").strip()
+
     def _serve(self):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
             server.bind(str(SOCKET_PATH))
-            server.listen(4)
+            server.listen(16)
             server.settimeout(0.5)
             while not self.stop_event.is_set():
                 try:
                     connection, _ = server.accept()
                 except socket.timeout:
                     continue
+
+                request = self._read_line(connection)
+                if request.startswith("{"):
+                    try:
+                        payload = json.loads(request)
+                    except json.JSONDecodeError:
+                        self._send_json_and_close(connection, {"error": "invalid_json"})
+                        continue
+
+                    msg_type = payload.get("type")
+                    if msg_type == "hitl_modal" and self.hitl_modal is not None:
+                        connection.settimeout(None)
+                        self._modal_queue.put((connection, payload))
+                        continue
+                    elif msg_type == "cancel_hitl":
+                        blocker_id = str(payload.get("blocker_id") or "")
+                        if blocker_id:
+                            with self._cancelled_lock:
+                                self._cancelled_blockers.add(blocker_id)
+                            if self.hitl_modal is not None:
+                                self.hitl_modal.cancel_if_active(
+                                    blocker_id, reason="cancelled_externally"
+                                )
+                        self._send_json_and_close(connection, {"ok": True})
+                        continue
+                    else:
+                        self._send_json_and_close(connection, {"error": "unsupported_request"})
+                        continue
+
                 with connection:
-                    request = connection.recv(64).decode("utf-8", errors="replace").strip()
                     if request != "trigger":
                         connection.sendall(b"error: unknown request\n")
                     elif self.worker and self.worker.is_alive():
@@ -249,7 +357,9 @@ def main():
     # Uses BASE_CANVAS_WIDTH, BASE_CANVAS_HEIGHT, HUD_SCALE, and HUD_POS_X/Y from hud_config.py
     hud = MacroHUD(resident=True)
     hud.setup_window()
-    service = MacroService(hud)
+    hitl_modal = HitlModalHUD(resident=True)
+    hitl_modal.setup_window()
+    service = MacroService(hud, hitl_modal=hitl_modal)
     service.start()
     NSApplication.sharedApplication().run()
 

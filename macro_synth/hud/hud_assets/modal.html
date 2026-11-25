@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --scale: __HUD_SCALE__;
+      }
+      __MODAL_CSS__
+    </style>
+  </head>
+  <body>
+    <div id="scaler">
+      <div id="modal-card" class="modal-hidden input-guarded">
+        <div id="modal-header">
+          <span id="modal-badge">Question</span>
+          <span id="modal-agent"></span>
+          <span id="modal-hint">Esc to dismiss</span>
+        </div>
+
+        <div id="modal-scroll">
+          <div id="modal-question"></div>
+          <pre id="modal-preview" class="hidden"></pre>
+          <div id="modal-options"></div>
+        </div>
+
+        <div id="modal-other-row" class="hidden">
+          <input
+            id="modal-other-input"
+            type="text"
+            placeholder="Other (type custom response and press Enter)..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="modal-submit-btn" type="button" title="Submit">
+            <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+              <path
+                d="M3 7H11M11 7L7.5 3.5M11 7L7.5 10.5"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      __MODAL_JS__
+    </script>
+  </body>
+</html>

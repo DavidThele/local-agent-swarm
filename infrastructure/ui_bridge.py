@@ -79,7 +79,33 @@ def request_hitl(
 
     emit("HITL_REQUIRED", payload)
 
-    # Block this background agent thread until resolved by the UI
+    # Also surface the universal upper-right macOS HUD modal so the user can respond
+    # from either swarm_gui or the HUD modal (whichever resolves first wins and updates the other).
+    from infrastructure import hud_client
+
+    if not hud_client.is_hud_modal_disabled():
+        def _hud_prompt_worker() -> None:
+            hud_res = hud_client.request_hitl_modal(
+                blocker_id=blocker_id,
+                blocker_type=blocker_type,
+                prompt_text=prompt_text,
+                agent_id=agent_id,
+                options=options,
+                command_preview=command_preview,
+            )
+            if hud_res.get("action") == "cancelled_externally":
+                return
+            resolve_hitl(
+                blocker_id=blocker_id,
+                agent_id=agent_id,
+                action=str(hud_res.get("action") or "cancel"),
+                value=str(hud_res.get("value") or ""),
+                from_hud=True,
+            )
+
+        threading.Thread(target=_hud_prompt_worker, daemon=True).start()
+
+    # Block this background agent thread until resolved by the UI or HUD modal
     wait_event.wait()
 
     with _HITL_LOCK:
@@ -88,16 +114,26 @@ def request_hitl(
     return entry.get("resolution") or {"action": "deny", "value": ""}
 
 
-def resolve_hitl(blocker_id: str, agent_id: str, action: str, value: str = "") -> bool:
-    """Called by swarm_server.py when the UI submits a HITL resolution."""
+def resolve_hitl(
+    blocker_id: str,
+    agent_id: str,
+    action: str,
+    value: str = "",
+    *,
+    from_hud: bool = False,
+) -> bool:
+    """Called by swarm_server.py or the HUD modal when the user submits a HITL resolution."""
     with _HITL_LOCK:
         entry = _PENDING_HITL.get(blocker_id)
-        if not entry:
+        if not entry or entry.get("resolution") is not None:
             return False
         entry["resolution"] = {"action": action, "value": value}
         entry["event"].set()
 
     emit("HITL_RESOLVED", {"blocker_id": blocker_id, "agent_id": agent_id})
+    if not from_hud:
+        from infrastructure import hud_client
+        hud_client.cancel_hitl_modal(blocker_id)
     return True
 
 
@@ -115,8 +151,10 @@ def cancel_hitl_for_agents(agent_ids: list[str] | set[str]) -> list[str]:
                 entry["event"].set()
                 resolved.append((blocker_id, entry["agent_id"]))
 
+    from infrastructure import hud_client
     for blocker_id, agent_id in resolved:
         emit("HITL_RESOLVED", {"blocker_id": blocker_id, "agent_id": agent_id})
+        hud_client.cancel_hitl_modal(blocker_id)
 
     return [blocker_id for blocker_id, _ in resolved]
 
@@ -131,7 +169,9 @@ def cancel_all_hitl(reason: str = "Application shutting down.") -> list[str]:
             entry["event"].set()
             resolved.append((blocker_id, entry.get("agent_id", "")))
 
+    from infrastructure import hud_client
     for blocker_id, agent_id in resolved:
         emit("HITL_RESOLVED", {"blocker_id": blocker_id, "agent_id": agent_id})
+        hud_client.cancel_hitl_modal(blocker_id)
 
     return [blocker_id for blocker_id, _ in resolved]

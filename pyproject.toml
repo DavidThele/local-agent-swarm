@@ -10,6 +10,7 @@ dependencies = [
 	"chromadb>=1.0.0",
 	"fastapi>=0.165.0",
 	"google-genai",
+	"mcp",
 	"numpy>=2.4.6",
 	"pillow>=13.0.0",
 	"playwright>=1.65.2",
@@ -21,7 +22,12 @@ dependencies = [
 	"pyobjc-framework-webkit>=13.0",
 	"pytest>=9.2.0",
 	"python-dotenv>=1.2.4",
+	"starlette",
+	"uvicorn",
 ]
+
+[tool.setuptools]
+py-modules = ["runtime"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -34,6 +40,8 @@ include = [
 	"prompts*",
 	"config*",
 	"macro_synth*",
+	"mcp_server*",
+	"mcp_command_adapters*",
 ]
 
 [tool.setuptools.package-data]

@@ -1,13 +1,10 @@
-import os
-
-BLOCKLIST = {"Passwords", "System Settings", "Keychain Access"}
-INTERVAL_SECONDS = 0.2
-DATA_DIR = os.environ.get(
-    "AGENTS_LOG_DIR",
-    os.path.expanduser("~/.agents/logs/moniter_data"),
+from runtime import (
+    DATA_DIR as _DATA_DIR,
+    MAX_DOM_LENGTH,
+    MAX_UI_TREE_DEPTH,
+    MONITOR_BLOCKLIST as BLOCKLIST,
+    MONITOR_INTERVAL_SECONDS as INTERVAL_SECONDS,
+    SKIP_VALUE_ROLES,
 )
 
-# UI Extraction limits
-MAX_UI_TREE_DEPTH = 5
-MAX_DOM_LENGTH = 1000
-SKIP_VALUE_ROLES = {"AXTextArea", "AXScrollArea", "AXWebArea"}
+DATA_DIR = str(_DATA_DIR)

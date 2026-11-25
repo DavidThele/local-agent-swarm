@@ -1,12 +1,14 @@
 from pathlib import Path
 from datetime import datetime
 from xml.sax.saxutils import escape
-from infrastructure.prompt_router import send_prompt, GEMINI_3_1_FLASH_LITE
+from infrastructure.prompt_router import send_prompt
 from db.db_manager import add_chunk, delete_chunk, search_similar_chunks
 from infrastructure.parser import parse_llm_output
 from infrastructure.logging import log
-
-N_SEARCH_RESULTS = 5
+from runtime import (
+    INGESTOR_MODEL,
+    N_INGESTION_SEARCH_RESULTS as N_SEARCH_RESULTS,
+)
 
 def load_system_prompt() -> str:
     """Loads ingestor instructions from the global workspace or repository."""
@@ -39,7 +41,7 @@ def process_telemetry(raw_log: str):
     phase1_prompt = f"{sys_prompt}\n\n=== RAW TELEMETRY LOG ===\n{raw_log}\n\nExecute Phase 1."
     
     # Call the router
-    output1, history1, _ = send_prompt(prompt_text=phase1_prompt, model=GEMINI_3_1_FLASH_LITE)
+    output1, history1, _ = send_prompt(prompt_text=phase1_prompt, model=INGESTOR_MODEL)
 
     log(f"[Ingestor] Phase 1 output: {output1}\n", "data")
 
@@ -92,7 +94,7 @@ def process_telemetry(raw_log: str):
     
     # Re-use the full history so the Phase 1 model response is available without
     # copying its extraction XML into the Phase 2 request.
-    output2, _, _ = send_prompt(prompt_text=phase2_prompt, model=GEMINI_3_1_FLASH_LITE, chat_history=history1)
+    output2, _, _ = send_prompt(prompt_text=phase2_prompt, model=INGESTOR_MODEL, chat_history=history1)
 
     log(f"[Ingestor] Phase 2 output: {output2}\n", "data")
     

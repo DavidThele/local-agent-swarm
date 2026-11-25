@@ -1,13 +1,18 @@
 from enum import Enum
 import os
 
-from infrastructure.models import GEMINI_4_HYDROGEN
+from runtime import (
+    AGENT_COMMANDS,
+    AGENT_MODEL_DEFAULTS as _RUNTIME_AGENT_MODEL_DEFAULTS,
+    AGENT_THINKING_LEVEL_DEFAULTS as _RUNTIME_AGENT_THINKING_LEVEL_DEFAULTS,
+)
 
 
 class AgentType(str, Enum):
     MAIN_ORCHESTRATOR = "main_orchestrator"
     SUB_ORCHESTRATOR = "sub_orchestrator"
     WORKER = "worker"
+    WEB_MCP = "web_mcp"
 
     @classmethod
     def parse(cls, value: "AgentType | str") -> "AgentType":
@@ -37,38 +42,7 @@ class AgentType(str, Enum):
 
     @property
     def commands(self) -> tuple[str, ...]:
-        return {
-            AgentType.MAIN_ORCHESTRATOR: (
-                "chat_title",
-                "search_db",
-                "spawn_agent",
-                "wait_for_agents",
-                "question",
-                "mark_done",
-                "chrome",
-                "wait_for_user",
-                "read_file",
-                "list_directory",
-                "zsh",
-            ),
-            AgentType.SUB_ORCHESTRATOR: (
-                "spawn_agent",
-                "wait_for_agents",
-                "mark_done",
-                "read_file",
-                "list_directory",
-                "zsh",
-            ),
-            AgentType.WORKER: (
-                "zsh",
-                "write_file",
-                "read_file",
-                "list_directory",
-                "mark_done",
-                "chrome",
-                "wait_for_user",
-            ),
-        }[self]
+        return AGENT_COMMANDS[self.value]
 
     @property
     def model(self) -> str:
@@ -81,19 +55,11 @@ class AgentType(str, Enum):
         return os.environ.get(env_key) or AGENT_THINKING_LEVEL_DEFAULTS[self]
 
 
-# Customizable default models and thinking levels per agent role.
-# Override either here or via env vars:
-#   AGENT_MODEL_MAIN_ORCHESTRATOR / AGENT_THINKING_MAIN_ORCHESTRATOR
-#   AGENT_MODEL_SUB_ORCHESTRATOR  / AGENT_THINKING_SUB_ORCHESTRATOR
-#   AGENT_MODEL_WORKER            / AGENT_THINKING_WORKER
+# Default models and thinking levels per agent role, sourced from root runtime.py.
 AGENT_MODEL_DEFAULTS: dict[AgentType, str] = {
-    AgentType.MAIN_ORCHESTRATOR: GEMINI_4_HYDROGEN,
-    AgentType.SUB_ORCHESTRATOR: GEMINI_4_HYDROGEN,
-    AgentType.WORKER: GEMINI_4_HYDROGEN,
+    role: _RUNTIME_AGENT_MODEL_DEFAULTS[role.value] for role in AgentType
 }
 
 AGENT_THINKING_LEVEL_DEFAULTS: dict[AgentType, str] = {
-    AgentType.MAIN_ORCHESTRATOR: "High",
-    AgentType.SUB_ORCHESTRATOR: "High",
-    AgentType.WORKER: "Medium",
+    role: _RUNTIME_AGENT_THINKING_LEVEL_DEFAULTS[role.value] for role in AgentType
 }

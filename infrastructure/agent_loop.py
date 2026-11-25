@@ -19,15 +19,11 @@ from infrastructure.logging import log
 from infrastructure.prompt_router import close_session, send_prompt
 from infrastructure.parser import parse_llm_output
 from infrastructure.agent_types import AgentType
-
-MAX_WORKER_ITERATIONS = 50
-MAX_ORCHESTRATOR_ITERATIONS = 100
-
-# Customizable per-agent active LLM thinking timeout in seconds (default: 5 minutes).
-# Tracks ONLY time spent waiting for LLM thinking/generation (excludes waiting on child agents,
-# tool execution, and HITL prompts). Override via env var AGENT_THINKING_TIMEOUT_SECONDS
-# or chat_context_state["thinking_timeout_seconds"].
-AGENT_THINKING_TIMEOUT_SECONDS = float(os.environ.get("AGENT_THINKING_TIMEOUT_SECONDS", "300"))
+from runtime import (
+    AGENT_THINKING_TIMEOUT_SECONDS,
+    MAX_ORCHESTRATOR_ITERATIONS,
+    MAX_WORKER_ITERATIONS,
+)
 
 
 class AgentCancelledError(Exception):

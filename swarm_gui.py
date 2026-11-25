@@ -39,10 +39,12 @@ from AppKit import (
 from Foundation import NSMakeSize, NSObject, NSTimer, NSURL, NSURLRequest, NSZeroPoint, NSZeroRect
 
 from infrastructure.logging import log
-
-HOST = "127.0.0.1"
-PORT = 8765
-REPO_ROOT = Path(__file__).resolve().parent
+from runtime import (
+    REPO_ROOT,
+    SHUTDOWN_TIMEOUT_SECONDS,
+    SWARM_GUI_HOST as HOST,
+    SWARM_GUI_PORT as PORT,
+)
 
 # Prevent Python GC from collecting Obj-C delegates and message handlers while the UI is alive
 _KEEP_ALIVE: list[object] = []
@@ -158,7 +160,7 @@ class SwarmShutdownController:
         try:
             import swarm_server
 
-            swarm_server.shutdown_runtime(timeout=4.0)
+            swarm_server.shutdown_runtime(timeout=SHUTDOWN_TIMEOUT_SECONDS)
         except Exception as exc:
             log(f"[SwarmGUI] Runtime shutdown warning: {exc}", "warning")
 

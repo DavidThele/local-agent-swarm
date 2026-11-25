@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 from db.db_manager import search_similar_chunks
+from runtime import DEFAULT_SEARCH_DB_RESULTS
 
 def execute(attributes: dict, content: dict, context_state: dict) -> str:
     # Handle cases where the LLM passes <Query> as a dictionary key or raw string
@@ -15,7 +16,7 @@ def execute(attributes: dict, content: dict, context_state: dict) -> str:
         return "[Error] SearchDB requires a <Query> tag with text."
         
     try:
-        n_results = int(attributes.get("n_results", 5))
+        n_results = int(attributes.get("n_results", DEFAULT_SEARCH_DB_RESULTS))
     except (TypeError, ValueError):
         return "[Error] SearchDB n_results must be an integer."
     if n_results <= 0:

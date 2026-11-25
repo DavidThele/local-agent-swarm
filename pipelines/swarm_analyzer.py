@@ -5,16 +5,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from infrastructure.logging import log
-from infrastructure.models import GEMINI_3_5_FLASH_LITE, GEMINI_4_HYDROGEN
 from infrastructure.parser import parse_llm_output
 from infrastructure.prompt_router import send_prompt
 from pipelines.performance_analyzer import snapshot_prompt_history
-
-GLOBAL_ROOT = Path.home() / ".agents"
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-SUBAGENT_MODEL = GEMINI_3_5_FLASH_LITE
-ORCHESTRATOR_MODEL = GEMINI_4_HYDROGEN
+from runtime import (
+    ANALYZER_ORCHESTRATOR_MODEL as ORCHESTRATOR_MODEL,
+    ANALYZER_SUBAGENT_MODEL as SUBAGENT_MODEL,
+    GLOBAL_ROOT,
+    REPO_ROOT,
+)
 
 ALLOWED_ROLE_PROMPTS = ("main_orchestrator", "sub_orchestrator", "worker")
 
