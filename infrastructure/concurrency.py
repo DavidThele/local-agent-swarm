@@ -1,5 +1,9 @@
-import threading
+import os
 import queue
+import signal
+import subprocess
+import threading
+import time
 import uuid
 from typing import Any
 from infrastructure import ui_bridge
@@ -12,6 +16,87 @@ TERMINAL_LOCK = threading.Lock()
 # agent_id -> {"parent_id": str|None, "agent_type": str, "cancel_event": Event, "cancel_reason": str|None, "children": set[str]}
 _AGENT_REGISTRY: dict[str, dict[str, Any]] = {}
 _REGISTRY_LOCK = threading.Lock()
+
+# Thread-safe registry of active child subprocesses (e.g., Zsh commands) for clean shutdown
+_ACTIVE_SUBPROCESSES: set[subprocess.Popen] = set()
+_SUBPROCESS_LOCK = threading.Lock()
+
+# Thread-safe registry of spawned background agent threads
+_ACTIVE_AGENT_THREADS: set[threading.Thread] = set()
+_THREADS_LOCK = threading.Lock()
+
+
+def register_subprocess(proc: subprocess.Popen) -> None:
+    """Tracks an active subprocess so graceful shutdown can terminate its process group."""
+    with _SUBPROCESS_LOCK:
+        _ACTIVE_SUBPROCESSES.add(proc)
+
+
+def unregister_subprocess(proc: subprocess.Popen) -> None:
+    """Removes a finished subprocess from the active tracker."""
+    with _SUBPROCESS_LOCK:
+        _ACTIVE_SUBPROCESSES.discard(proc)
+
+
+def terminate_process_group(proc: subprocess.Popen, grace_seconds: float = 2.0) -> None:
+    """
+    Gracefully terminates a subprocess and its entire process group (SIGTERM -> SIGKILL).
+    Safe to call even if the process already exited.
+    """
+    if proc.poll() is not None:
+        return
+
+    pgid: int | None = None
+    if os.name == "posix":
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            pgid = None
+
+    # Only signal the process group if it is isolated from our own process group
+    own_pgid = os.getpgrp() if os.name == "posix" else None
+    use_pgid = pgid is not None and pgid != own_pgid
+
+    try:
+        if use_pgid and pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except (ProcessLookupError, OSError):
+        return
+
+    try:
+        proc.wait(timeout=grace_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        if use_pgid and pgid is not None:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+
+    try:
+        proc.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def terminate_all_subprocesses(grace_seconds: float = 1.5) -> int:
+    """Terminates all tracked active subprocesses and their process groups."""
+    with _SUBPROCESS_LOCK:
+        procs = list(_ACTIVE_SUBPROCESSES)
+
+    terminated = 0
+    for proc in procs:
+        if proc.poll() is None:
+            terminate_process_group(proc, grace_seconds=grace_seconds)
+            terminated += 1
+        unregister_subprocess(proc)
+    return terminated
 
 
 def register_agent(
@@ -116,6 +201,43 @@ def cancel_agent_tree(agent_id: str, reason: str = "Cancelled by user.") -> list
     return cancelled_ids
 
 
+def cancel_all_agents(reason: str = "Application shutting down.") -> list[str]:
+    """
+    Cancels every currently active agent in the registry and unblocks all pending HITL prompts.
+    Used during graceful application shutdown.
+    """
+    cancelled_ids: list[str] = []
+    with _REGISTRY_LOCK:
+        for agent_id, entry in _AGENT_REGISTRY.items():
+            cancelled_ids.append(agent_id)
+            if entry["cancel_reason"] is None:
+                entry["cancel_reason"] = reason
+            entry["cancel_event"].set()
+
+    ui_bridge.cancel_all_hitl(reason=reason)
+    return cancelled_ids
+
+
+def wait_for_active_agents(timeout: float = 3.0) -> bool:
+    """Waits up to `timeout` seconds for all spawned background agent threads to exit."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    with _THREADS_LOCK:
+        threads = list(_ACTIVE_AGENT_THREADS)
+
+    for t in threads:
+        if t is threading.current_thread():
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if t.is_alive():
+            t.join(timeout=remaining)
+
+    with _THREADS_LOCK:
+        alive = [t for t in _ACTIVE_AGENT_THREADS if t.is_alive() and t is not threading.current_thread()]
+    return len(alive) == 0
+
+
 def spawn_background_agent(
     agent_type: AgentType | str,
     instructions: str,
@@ -173,6 +295,8 @@ def spawn_background_agent(
             output = f"Unhandled exception in agent thread: {str(e)}"
         finally:
             unregister_agent(agent_id)
+            with _THREADS_LOCK:
+                _ACTIVE_AGENT_THREADS.discard(threading.current_thread())
 
         # Notify the parent agent via its thread-safe queue
         notification_msg = (
@@ -183,6 +307,8 @@ def spawn_background_agent(
 
     # Register child as active before starting thread
     thread = threading.Thread(target=_thread_target, name=agent_id, daemon=True)
+    with _THREADS_LOCK:
+        _ACTIVE_AGENT_THREADS.add(thread)
     active_children[agent_id] = {
         "type": agent_type.value,
         "thread": thread,

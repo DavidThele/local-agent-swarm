@@ -125,6 +125,23 @@ def init_browser() -> Page:
     except Exception as e:
         raise RuntimeError(f"Failed to connect to Chrome via Playwright: {e}")
 
+def shutdown() -> None:
+    """Cleanly detaches CDP browser and stops the Playwright driver subprocess."""
+    global _PLAYWRIGHT, _BROWSER, _CONTEXT, _PAGE
+    browser, playwright = _BROWSER, _PLAYWRIGHT
+    _PLAYWRIGHT, _BROWSER, _CONTEXT, _PAGE = None, None, None, None
+    if browser is not None:
+        try:
+            browser.close()
+        except Exception:
+            pass
+    if playwright is not None:
+        try:
+            playwright.stop()
+        except Exception:
+            pass
+
+
 def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
     global _PAGE, _BROWSER, _PLAYWRIGHT, _CONTEXT
     

@@ -119,3 +119,19 @@ def cancel_hitl_for_agents(agent_ids: list[str] | set[str]) -> list[str]:
         emit("HITL_RESOLVED", {"blocker_id": blocker_id, "agent_id": agent_id})
 
     return [blocker_id for blocker_id, _ in resolved]
+
+
+def cancel_all_hitl(reason: str = "Application shutting down.") -> list[str]:
+    """Unblocks every pending HITL prompt across all agents (used during graceful shutdown)."""
+    resolved: list[tuple[str, str]] = []
+    with _HITL_LOCK:
+        for blocker_id, entry in _PENDING_HITL.items():
+            if entry.get("resolution") is None:
+                entry["resolution"] = {"action": "cancel", "value": reason}
+            entry["event"].set()
+            resolved.append((blocker_id, entry.get("agent_id", "")))
+
+    for blocker_id, agent_id in resolved:
+        emit("HITL_RESOLVED", {"blocker_id": blocker_id, "agent_id": agent_id})
+
+    return [blocker_id for blocker_id, _ in resolved]

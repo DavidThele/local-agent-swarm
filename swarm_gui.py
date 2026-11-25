@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import signal
 import threading
 import time
 import urllib.request
@@ -16,8 +17,10 @@ from AppKit import (
     NSBezierPath,
     NSColor,
     NSCompositingOperationSourceOver,
+    NSEvent,
     NSEventModifierFlagCommand,
     NSEventModifierFlagShift,
+    NSEventTypeApplicationDefined,
     NSGraphicsContext,
     NSImage,
     NSImageInterpolationNone,
@@ -26,14 +29,14 @@ from AppKit import (
     NSMenuItem,
     NSNormalWindowLevel,
     NSScreen,
+    NSTerminateCancel,
     NSWindow,
     NSWindowStyleMaskClosable,
     NSWindowStyleMaskMiniaturizable,
     NSWindowStyleMaskResizable,
     NSWindowStyleMaskTitled,
 )
-from Foundation import NSMakeSize, NSObject, NSURL, NSURLRequest, NSZeroRect
-from PyObjCTools import AppHelper
+from Foundation import NSMakeSize, NSObject, NSTimer, NSURL, NSURLRequest, NSZeroPoint, NSZeroRect
 
 from infrastructure.logging import log
 
@@ -41,8 +44,134 @@ HOST = "127.0.0.1"
 PORT = 8765
 REPO_ROOT = Path(__file__).resolve().parent
 
-# Prevent Python GC from collecting Obj-C delegates and message handlers
+# Prevent Python GC from collecting Obj-C delegates and message handlers while the UI is alive
 _KEEP_ALIVE: list[object] = []
+_SIGNAL_RECEIVED = threading.Event()
+
+
+def _handle_exit_signal(signum, _frame):
+    """Records SIGINT/SIGTERM so the active loop (AppKit or --browser) can exit gracefully."""
+    _SIGNAL_RECEIVED.set()
+
+
+def _stop_appkit_run_loop() -> None:
+    """Stops NSApplication.run() cleanly without invoking C exit(0)."""
+    app = NSApplication.sharedApplication()
+    app.stop_(None)
+    # Post a dummy event so NSApplication.run() wakes up and returns immediately
+    wakeup = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+        NSEventTypeApplicationDefined,
+        NSZeroPoint,
+        0,
+        0.0,
+        0,
+        None,
+        0,
+        0,
+        0,
+    )
+    if wakeup is not None:
+        app.postEvent_atStart_(wakeup, True)
+
+
+class SwarmShutdownController:
+    """
+    Coordinates idempotent teardown of the AppKit window/WKWebView, Uvicorn server,
+    active agents, subprocess groups, and Playwright routers so macOS never crashes
+    with 'Python quit unexpectedly'.
+    """
+
+    def __init__(self, server: uvicorn.Server | None = None, server_thread: threading.Thread | None = None):
+        self.server = server
+        self.server_thread = server_thread
+        self.window = None
+        self.webview = None
+        self.content_controller = None
+        self.signal_timer = None
+        self._ui_torn_down = False
+        self._backend_cleaned = False
+        self._lock = threading.Lock()
+
+    def attach_ui(self, window, webview, content_controller, signal_timer=None) -> None:
+        self.window = window
+        self.webview = webview
+        self.content_controller = content_controller
+        self.signal_timer = signal_timer
+
+    def teardown_ui_and_stop_loop(self) -> None:
+        """
+        Must be called on the AppKit main thread. Detaches WKWebView script handlers
+        and window delegates before stopping the run loop so AppKit never calls C exit(0)
+        while Python threads or WebKit IPC are still active.
+        """
+        with self._lock:
+            if self._ui_torn_down:
+                return
+            self._ui_torn_down = True
+
+        if self.signal_timer is not None:
+            try:
+                self.signal_timer.invalidate()
+            except Exception:
+                pass
+            self.signal_timer = None
+
+        if self.content_controller is not None:
+            try:
+                self.content_controller.removeScriptMessageHandlerForName_("windowBridge")
+            except Exception:
+                pass
+            self.content_controller = None
+
+        if self.webview is not None:
+            try:
+                self.webview.stopLoading()
+            except Exception:
+                pass
+
+        if self.window is not None:
+            try:
+                self.window.setDelegate_(None)
+            except Exception:
+                pass
+            try:
+                self.window.orderOut_(None)
+            except Exception:
+                pass
+            try:
+                self.window.setContentView_(None)
+            except Exception:
+                pass
+
+        self.webview = None
+        self.window = None
+
+        _stop_appkit_run_loop()
+
+    def cleanup_backend(self) -> None:
+        """Cancels running agents/subprocesses, closes Playwright/CDP, and joins Uvicorn."""
+        with self._lock:
+            if self._backend_cleaned:
+                return
+            self._backend_cleaned = True
+
+        try:
+            import swarm_server
+
+            swarm_server.shutdown_runtime(timeout=4.0)
+        except Exception as exc:
+            log(f"[SwarmGUI] Runtime shutdown warning: {exc}", "warning")
+
+        if self.server is not None:
+            self.server.should_exit = True
+
+        if self.server_thread is not None and self.server_thread.is_alive():
+            self.server_thread.join(timeout=3.0)
+            if self.server_thread.is_alive() and self.server is not None:
+                self.server.force_exit = True
+                self.server_thread.join(timeout=1.5)
+
+        _KEEP_ALIVE.clear()
 
 
 def build_acorn_app_icon():
@@ -103,19 +232,63 @@ def build_acorn_app_icon():
     return canvas
 
 
+class SwarmAppDelegate(NSObject):
+    """
+    Intercepts Cmd+Q, Menu Bar Quit, and Dock Quit so AppKit stops the run loop cleanly
+    and returns control to Python instead of calling C exit(0) mid-thread.
+    """
+
+    def initWithShutdownController_(self, shutdown_controller):
+        self = objc.super(SwarmAppDelegate, self).init()
+        if self is None:
+            return None
+        self.shutdown_controller = shutdown_controller
+        return self
+
+    def applicationShouldTerminate_(self, sender):
+        self.shutdown_controller.teardown_ui_and_stop_loop()
+        return NSTerminateCancel
+
+    def applicationShouldTerminateAfterLastWindowClosed_(self, sender):
+        return False
+
+
 class SwarmWindowDelegate(NSObject):
-    """Terminates the application cleanly when the user clicks the macOS red close button."""
+    """Stops the event loop cleanly when the user clicks the macOS red close button."""
+
+    def initWithShutdownController_(self, shutdown_controller):
+        self = objc.super(SwarmWindowDelegate, self).init()
+        if self is None:
+            return None
+        self.shutdown_controller = shutdown_controller
+        return self
 
     def windowWillClose_(self, notification):
-        NSApplication.sharedApplication().terminate_(None)
+        self.shutdown_controller.teardown_ui_and_stop_loop()
+
+
+class SignalWatcher(NSObject):
+    """Polls for SIGINT/SIGTERM on the main RunLoop so Ctrl+C exits cleanly."""
+
+    def initWithShutdownController_(self, shutdown_controller):
+        self = objc.super(SignalWatcher, self).init()
+        if self is None:
+            return None
+        self.shutdown_controller = shutdown_controller
+        return self
+
+    def checkSignal_(self, timer):
+        if _SIGNAL_RECEIVED.is_set():
+            self.shutdown_controller.teardown_ui_and_stop_loop()
 
 
 class WindowBridgeHandler(NSObject):
-    def initWithWindow_(self, window):
+    def initWithWindow_shutdownController_(self, window, shutdown_controller):
         self = objc.super(WindowBridgeHandler, self).init()
         if self is None:
             return None
         self.window = window
+        self.shutdown_controller = shutdown_controller
         return self
 
     def userContentController_didReceiveScriptMessage_(self, controller, message):
@@ -135,28 +308,33 @@ class WindowBridgeHandler(NSObject):
                 self.window.miniaturize_(None)
 
             elif action == "quit":
-                NSApplication.sharedApplication().terminate_(None)
+                self.shutdown_controller.teardown_ui_and_stop_loop()
         except Exception as exc:
             log(f"[SwarmGUI] Window bridge error: {exc}", "warning")
 
 
-def start_backend_server():
+def start_backend_server() -> tuple[uvicorn.Server, threading.Thread]:
     config = uvicorn.Config(
         "swarm_server:app",
         host=HOST,
         port=PORT,
         log_level="warning",
+        timeout_graceful_shutdown=3,
     )
     server = uvicorn.Server(config)
+    # Main thread owns SIGINT/SIGTERM so graceful shutdown runs in one place
+    server.install_signal_handlers = lambda: None
     thread = threading.Thread(target=server.run, name="swarm_uvicorn", daemon=True)
     thread.start()
 
     for _ in range(40):
         try:
             urllib.request.urlopen(f"http://{HOST}:{PORT}/api/config", timeout=0.5)
-            return
+            return server, thread
         except Exception:
             time.sleep(0.1)
+
+    return server, thread
 
 
 def build_main_menu():
@@ -197,9 +375,13 @@ def build_main_menu():
     return main_menu
 
 
-def launch_native_window(url: str):
+def launch_native_window(url: str, shutdown_controller: SwarmShutdownController):
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+
+    app_delegate = SwarmAppDelegate.alloc().initWithShutdownController_(shutdown_controller)
+    app.setDelegate_(app_delegate)
+    _KEEP_ALIVE.append(app_delegate)
 
     main_menu = build_main_menu()
     app.setMainMenu_(main_menu)
@@ -236,20 +418,28 @@ def launch_native_window(url: str):
     )
     window.setMinSize_((760, 520))
 
-    delegate = SwarmWindowDelegate.alloc().init()
-    window.setDelegate_(delegate)
+    window_delegate = SwarmWindowDelegate.alloc().initWithShutdownController_(shutdown_controller)
+    window.setDelegate_(window_delegate)
 
     config = WebKit.WKWebViewConfiguration.alloc().init()
     controller = WebKit.WKUserContentController.alloc().init()
-    handler = WindowBridgeHandler.alloc().initWithWindow_(window)
+    handler = WindowBridgeHandler.alloc().initWithWindow_shutdownController_(
+        window, shutdown_controller
+    )
     controller.addScriptMessageHandler_name_(handler, "windowBridge")
     config.setUserContentController_(controller)
 
-    _KEEP_ALIVE.extend([window, delegate, handler, controller])
+    signal_watcher = SignalWatcher.alloc().initWithShutdownController_(shutdown_controller)
+    signal_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        0.25, signal_watcher, "checkSignal:", None, True
+    )
 
     content_bounds = window.contentView().bounds()
     webview = WebKit.WKWebView.alloc().initWithFrame_configuration_(content_bounds, config)
     webview.setAutoresizingMask_(18)  # NSViewWidthSizable | NSViewHeightSizable
+
+    shutdown_controller.attach_ui(window, webview, controller, signal_timer=signal_timer)
+    _KEEP_ALIVE.extend([window, window_delegate, handler, controller, webview, signal_watcher, signal_timer])
 
     req = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
     webview.loadRequest_(req)
@@ -258,7 +448,11 @@ def launch_native_window(url: str):
     window.makeKeyAndOrderFront_(None)
     app.activateIgnoringOtherApps_(True)
 
-    AppHelper.runEventLoop()
+    try:
+        app.run()
+    finally:
+        shutdown_controller.teardown_ui_and_stop_loop()
+        app.setDelegate_(None)
 
 
 def main():
@@ -275,23 +469,31 @@ def main():
     )
     args = parser.parse_args()
 
-    start_backend_server()
+    _SIGNAL_RECEIVED.clear()
+    signal.signal(signal.SIGINT, _handle_exit_signal)
+    signal.signal(signal.SIGTERM, _handle_exit_signal)
+
+    server, server_thread = start_backend_server()
+    shutdown_controller = SwarmShutdownController(server=server, server_thread=server_thread)
+
     target_url = (
         "http://localhost:5173/?live=1"
         if args.dev
         else f"http://{HOST}:{PORT}/?live=1"
     )
 
-    if args.browser:
-        print(f"Swarm server running at {target_url}")
-        webbrowser.open(target_url)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
-    else:
-        launch_native_window(target_url)
+    try:
+        if args.browser:
+            print(f"Swarm server running at {target_url}")
+            webbrowser.open(target_url)
+            while not _SIGNAL_RECEIVED.is_set():
+                time.sleep(0.25)
+        else:
+            launch_native_window(target_url, shutdown_controller)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        shutdown_controller.cleanup_backend()
 
 
 if __name__ == "__main__":

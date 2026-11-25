@@ -92,8 +92,16 @@ class PromptRouter:
             delay_seconds=delay_seconds,
         )
 
+    def shutdown(self, timeout: float = 4.0) -> None:
+        """Cleanly shuts down background router resources (e.g., WebPromptRouter event loop)."""
+        self.web_router.shutdown(timeout=timeout)
+
 
 _default_router = PromptRouter()
+
+
+def shutdown(timeout: float = 4.0) -> None:
+    _default_router.shutdown(timeout=timeout)
 
 
 def close_session(

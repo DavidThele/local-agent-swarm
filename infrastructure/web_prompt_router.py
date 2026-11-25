@@ -893,3 +893,55 @@ class WebPromptRouter:
         )
 
         return response_text, chat_history, cost
+
+    async def _shutdown_async(self) -> None:
+        self._sessions_by_history_id.clear()
+        self._sessions_by_chat_id.clear()
+
+        browser = self._browser
+        playwright = self._playwright
+        self._browser = None
+        self._context = None
+        self._playwright = None
+
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+
+    def shutdown(self, timeout: float = 4.0) -> None:
+        """Cleanly detaches Playwright/CDP and stops the background asyncio loop thread."""
+        with self._loop_init_lock:
+            loop = self._loop
+            thread = self._loop_thread
+            self._loop = None
+            self._loop_thread = None
+
+        if loop is None:
+            return
+
+        if loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._shutdown_async(), loop)
+                future.result(timeout=max(0.5, timeout))
+            except Exception as exc:
+                log(f"[WebRouter] Shutdown cleanup warning: {exc}", "debug")
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
+
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+        try:
+            if not loop.is_running() and not loop.is_closed():
+                loop.close()
+        except Exception:
+            pass

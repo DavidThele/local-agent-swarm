@@ -1,10 +1,16 @@
+import os
 import shlex
 import subprocess
 import time
 from pathlib import Path
 from infrastructure import ui_bridge
 from infrastructure.logging import log
-from infrastructure.concurrency import TERMINAL_LOCK
+from infrastructure.concurrency import (
+    TERMINAL_LOCK,
+    register_subprocess,
+    terminate_process_group,
+    unregister_subprocess,
+)
 
 # Hardcoded baseline shell injection vectors (newlines, carriage returns, subshells)
 # that are ALWAYS checked alongside the user's config/cmd_blacklist.md
@@ -110,22 +116,16 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=(os.name == "posix"),
         )
+        register_subprocess(proc)
         deadline = time.monotonic() + timeout
         while proc.poll() is None:
             if cancel_event and cancel_event.is_set():
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+                terminate_process_group(proc, grace_seconds=1.5)
                 return "[Error] Command cancelled by user."
             if time.monotonic() >= deadline:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+                terminate_process_group(proc, grace_seconds=1.5)
                 return f"[Error] Command timed out after {timeout} seconds."
             time.sleep(0.05)
 
@@ -145,5 +145,8 @@ def execute(attributes: dict, content: dict | str, context_state: dict) -> str:
 
     except Exception as e:
         if proc and proc.poll() is None:
-            proc.kill()
+            terminate_process_group(proc, grace_seconds=1.0)
         return f"[Error] Execution failed: {str(e)}"
+    finally:
+        if proc is not None:
+            unregister_subprocess(proc)

@@ -17,7 +17,8 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-from infrastructure import ui_bridge
+from command_executors import chrome_exec
+from infrastructure import prompt_router, ui_bridge
 from infrastructure.agent_loop import (
     AGENT_THINKING_TIMEOUT_SECONDS,
     MAX_ORCHESTRATOR_ITERATIONS,
@@ -25,7 +26,12 @@ from infrastructure.agent_loop import (
     run_agent,
 )
 from infrastructure.agent_types import AgentType
-from infrastructure.concurrency import cancel_agent_tree
+from infrastructure.concurrency import (
+    cancel_agent_tree,
+    cancel_all_agents,
+    terminate_all_subprocesses,
+    wait_for_active_agents,
+)
 from infrastructure.logging import log
 from infrastructure.workspace import create_chat_instance, init_global_workspace
 from pipelines.swarm_analyzer import analyze_session
@@ -47,6 +53,8 @@ _ACTIVE_WORKSPACE: Path = Path.cwd().resolve()
 _ACTIVE_CHAT_ID: str = ""
 _WS_CLIENTS: set[WebSocket] = set()
 _WS_LOCK = asyncio.Lock()
+_PIPELINE_THREADS: set[threading.Thread] = set()
+_PIPELINE_LOCK = threading.Lock()
 
 
 async def broadcast_event(message: dict[str, Any]) -> None:
@@ -64,6 +72,48 @@ async def broadcast_event(message: dict[str, Any]) -> None:
                 _WS_CLIENTS.discard(ws)
 
 
+def shutdown_runtime(timeout: float = 4.0) -> None:
+    """
+    Cancels all active agents, terminates running child subprocess groups,
+    joins active swarm threads, and tears down Playwright/browser routers.
+    Safe to call multiple times.
+    """
+    deadline = time.monotonic() + max(0.5, timeout)
+
+    cancelled = cancel_all_agents(reason="Application shutting down.")
+    if cancelled:
+        log(f"[SwarmServer] Cancelled {len(cancelled)} active agent(s) on shutdown.", "info")
+
+    killed_procs = terminate_all_subprocesses(grace_seconds=1.5)
+    if killed_procs:
+        log(f"[SwarmServer] Terminated {killed_procs} active subprocess(es) on shutdown.", "info")
+
+    with _PIPELINE_LOCK:
+        pipeline_threads = list(_PIPELINE_THREADS)
+
+    for thread in pipeline_threads:
+        if thread is threading.current_thread():
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if thread.is_alive():
+            thread.join(timeout=remaining)
+
+    remaining = max(0.2, deadline - time.monotonic())
+    wait_for_active_agents(timeout=remaining)
+
+    try:
+        prompt_router.shutdown(timeout=2.5)
+    except Exception as exc:
+        log(f"[SwarmServer] Prompt router shutdown warning: {exc}", "debug")
+
+    try:
+        chrome_exec.shutdown()
+    except Exception as exc:
+        log(f"[SwarmServer] Chrome executor shutdown warning: {exc}", "debug")
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     loop = asyncio.get_running_loop()
@@ -72,6 +122,14 @@ async def on_startup() -> None:
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
+    async with _WS_LOCK:
+        clients = list(_WS_CLIENTS)
+        _WS_CLIENTS.clear()
+    for ws in clients:
+        try:
+            await ws.close(code=1001)
+        except Exception:
+            pass
     ui_bridge.unregister_bridge()
 
 
@@ -478,8 +536,14 @@ def deploy_swarm(req: DeploySwarmReq):
         except Exception as exc:
             log(f"[SwarmServer] Pipeline thread failed: {exc}", "error")
             ui_bridge.emit("SESSION_UPDATED", {"overall_status": "Failed"})
+        finally:
+            with _PIPELINE_LOCK:
+                _PIPELINE_THREADS.discard(threading.current_thread())
 
-    threading.Thread(target=_run_pipeline, name=f"swarm_{chat_id}", daemon=True).start()
+    pipeline_thread = threading.Thread(target=_run_pipeline, name=f"swarm_{chat_id}", daemon=True)
+    with _PIPELINE_LOCK:
+        _PIPELINE_THREADS.add(pipeline_thread)
+    pipeline_thread.start()
     return {"chat_id": chat_id, "workspace_root": str(_ACTIVE_WORKSPACE)}
 
 
